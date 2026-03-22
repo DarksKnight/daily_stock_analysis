@@ -321,12 +321,31 @@ class MarketAnalyzer:
     #     """获取北向资金流入"""
     #     ...
 
+    # 统计性虚拟板块：这些并非真实投资主题，需从概念涨跌榜中过滤掉
+    _CONCEPT_EXCLUDE = frozenset(
+        {
+            "昨日连板",
+            "昨日连板_含一字",
+            "东方财富热股",
+            "昨日首板",
+            "昨日涨停",
+            "昨日涨停_含一字",
+            "昨日触板",
+            "昨日炸板",
+            "昨日高换手",
+            "昨日高振幅",
+        }
+    )
+
     def _get_concept_sector_rankings(self, overview: MarketOverview) -> None:
         """获取概念板块涨跌榜（A 股独有）"""
         try:
             logger.info("[大盘] 获取概念板块涨跌榜...")
             top_concept, bottom_concept = self.data_manager.get_concept_sector_rankings(10)
             if top_concept or bottom_concept:
+                # 过滤掉统计性虚拟板块（昨日连板、东方财富热股、昨日首板等）
+                top_concept = [s for s in top_concept if s.get("name") not in self._CONCEPT_EXCLUDE]
+                bottom_concept = [s for s in bottom_concept if s.get("name") not in self._CONCEPT_EXCLUDE]
                 overview.top_concept_sectors = top_concept
                 overview.bottom_concept_sectors = bottom_concept
                 logger.info("[大盘] 领涨概念: %s", [s["name"] for s in overview.top_concept_sectors[:5]])
