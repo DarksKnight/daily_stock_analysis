@@ -13,7 +13,8 @@ import { cn } from "../utils/cn";
 
 // ============ 常量 ============
 
-const DEFAULT_KEYWORDS = "MA5MA10多头排列;非ST;市值大于100亿";
+const DEFAULT_KEYWORDS =
+  "MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上";
 
 const MARKET_TYPE_OPTIONS: { value: "stock" | "bk" | "etf"; label: string }[] =
   [
@@ -23,7 +24,7 @@ const MARKET_TYPE_OPTIONS: { value: "stock" | "bk" | "etf"; label: string }[] =
   ];
 
 const EXAMPLE_CONDITIONS = [
-  "MA5MA10多头排列;非ST;市值大于100亿",
+  "MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上",
   "量比大于2，非ST，换手率大于3%",
   "今日涨幅大于3%;MACD金叉;市值50亿到300亿",
   "今日涨幅前15的ETF",

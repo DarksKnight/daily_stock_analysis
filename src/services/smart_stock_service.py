@@ -118,11 +118,13 @@ class SmartStockService:
             "extraCondition": "",
         }
 
+        headers = {**_DEFAULT_HEADERS, "Cookie": f"qgqp_b_id={self._fingerprint}"}
+
         try:
             resp = requests.post(
                 url,
                 json=payload,
-                headers=_DEFAULT_HEADERS,
+                headers=headers,
                 timeout=self._timeout,
             )
             resp.raise_for_status()

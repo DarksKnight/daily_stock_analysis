@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.smart_select import SmartSelectRequest, SmartSelectResponse
+from src.config import get_config
 from src.services.smart_stock_service import SmartStockService
 
 logger = logging.getLogger(__name__)
@@ -35,9 +36,12 @@ def _get_service(qgqp_b_id_override: Union[str, None]) -> SmartStockService:
 
     优先级：
     1. 请求体中显式传入的 qgqp_b_id
-    2. 自动生成随机指纹
+    2. 环境变量 EASTMONEY_QGQP_B_ID
+    3. 自动生成随机指纹
     """
-    return SmartStockService(qgqp_b_id=qgqp_b_id_override or None)
+    cfg = get_config()
+    qgqp_b_id = qgqp_b_id_override or cfg.eastmoney_qgqp_b_id or None
+    return SmartStockService(qgqp_b_id=qgqp_b_id)
 
 
 @router.post(
@@ -52,7 +56,7 @@ def _get_service(qgqp_b_id_override: Union[str, None]) -> SmartStockService:
     description=(
         "传入自然语言选股条件，调用东方财富选股接口，返回符合条件的 A 股个股列表。\n\n"
         "**条件示例**：\n"
-        "- `MA5MA10多头排列;非ST;市值大于100亿`\n"
+        "- `MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上`\n"
         "- `量比大于2，换手率大于3%，非ST，非创业板`\n"
         "- `今日涨幅大于3%;MACD金叉;市值50亿到300亿`\n\n"
         "多个条件可用 `;` 或 `,` 或中文标点分隔。"

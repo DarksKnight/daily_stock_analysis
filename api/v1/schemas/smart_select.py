@@ -19,9 +19,12 @@ class SmartSelectRequest(BaseModel):
 
     keywords: str = Field(
         ...,
-        description=("自然语言选股条件，多个条件用 ; 或中文标点分隔。" "例：MA5MA10多头排列;非ST;市值大于100亿"),
+        description=(
+            "自然语言选股条件，多个条件用 ; 或中文标点分隔。"
+            "例：MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上"
+        ),
         examples=[
-            "MA5MA10多头排列;非ST;市值大于100亿",
+            "MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上",
             "量比大于2，基本面优秀，非ST，换手率大于3%",
             "今日涨幅大于3%;换手率大于5%;市值50亿到300亿;MACD金叉",
         ],
@@ -42,7 +45,7 @@ class SmartSelectRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "keywords": "MA5MA10多头排列;非ST;市值大于100亿",
+                "keywords": "MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上",
                 "market_type": "stock",
             }
         }
@@ -67,7 +70,7 @@ class SmartSelectResponse(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "keywords": "MA5MA10多头排列;非ST;市值大于100亿",
+                "keywords": "MA5MA10多头排列;非ST;市值大于100亿;领涨板块四天内领涨两次以上",
                 "market_type": "stock",
                 "total": 156,
                 "columns": [
