@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 _XCALS_AVAILABLE = False
 try:
     import exchange_calendars as xcals
+
     _XCALS_AVAILABLE = True
 except ImportError:
     logger.warning(
-        "exchange-calendars not installed; trading day check disabled. "
-        "Run: pip install exchange-calendars"
+        "exchange-calendars not installed; trading day check disabled. " "Run: pip install exchange-calendars"
     )
 
 # Market -> exchange code (exchange-calendars)
@@ -101,6 +101,7 @@ def get_open_markets_today() -> Set[str]:
         return {"cn", "hk", "us"}
     result: Set[str] = set()
     from zoneinfo import ZoneInfo
+
     for mkt, tz_name in MARKET_TIMEZONE.items():
         try:
             tz = ZoneInfo(tz_name)
@@ -113,33 +114,60 @@ def get_open_markets_today() -> Set[str]:
     return result
 
 
-def compute_effective_region(
-    config_region: str, open_markets: Set[str]
-) -> Optional[str]:
+def compute_effective_region(config_region: str, open_markets: Set[str]) -> Optional[str]:
     """
     Compute effective market review region given config and open markets.
 
     Args:
-        config_region: From MARKET_REVIEW_REGION ('cn' | 'us' | 'both')
+        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'both' | 'all')
         open_markets: Markets open today
 
     Returns:
         None: caller uses config default (check disabled)
         '': all relevant markets closed, skip market review
-        'cn' | 'us' | 'both': effective subset for today
+        'cn' | 'hk' | 'us' | 'both' | 'all': effective subset for today
     """
-    if config_region not in ("cn", "us", "both"):
+    if config_region not in ("cn", "hk", "us", "both", "all"):
         config_region = "cn"
     if config_region == "cn":
         return "cn" if "cn" in open_markets else ""
+    if config_region == "hk":
+        return "hk" if "hk" in open_markets else ""
     if config_region == "us":
         return "us" if "us" in open_markets else ""
-    # both
+    if config_region == "both":
+        # both = cn + us
+        parts = []
+        if "cn" in open_markets:
+            parts.append("cn")
+        if "us" in open_markets:
+            parts.append("us")
+        if not parts:
+            return ""
+        return "both" if len(parts) == 2 else parts[0]
+    # all = cn + hk + us
     parts = []
     if "cn" in open_markets:
         parts.append("cn")
+    if "hk" in open_markets:
+        parts.append("hk")
     if "us" in open_markets:
         parts.append("us")
     if not parts:
         return ""
-    return "both" if len(parts) == 2 else parts[0]
+    if len(parts) == 3:
+        return "all"
+    # Return a combined string representation for partial open days
+    # If only one market open, return its code directly
+    if len(parts) == 1:
+        return parts[0]
+    # Two markets open: map pairs to canonical values
+    parts_set = set(parts)
+    if parts_set == {"cn", "us"}:
+        return "both"
+    # cn+hk or hk+us: no canonical value; fall back to first relevant region
+    # Prefer cn over hk over us
+    for preferred in ("cn", "hk", "us"):
+        if preferred in parts_set:
+            return preferred
+    return parts[0]

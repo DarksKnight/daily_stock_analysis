@@ -1372,7 +1372,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_required": False,
         "is_editable": True,
         "default_value": "cn",
-        "options": ["cn", "us", "both"],
+        "options": ["cn", "hk", "us", "both", "all"],
         "validation": {"enum": ["cn", "us", "both"]},
         "display_order": 47,
     },
@@ -1832,42 +1832,64 @@ def _infer_category(key: str) -> str:
         return "backtest"
     if key.startswith(("GEMINI_", "OPENAI_", "ANTHROPIC_", "LITELLM_", "AIHUBMIX_", "DEEPSEEK_", "LLM_")):
         return "ai_model"
-    if key.endswith("_PRIORITY") or key.startswith(
-        (
-            "TUSHARE",
-            "TICKFLOW",
-            "AKSHARE",
-            "EFINANCE",
-            "PYTDX",
-            "BAOSTOCK",
-            "YFINANCE",
-            "TAVILY",
-            "SERPAPI",
-            "BRAVE",
-            "BOCHA",
-            "SEARXNG",
-            "NEWS_",
-            "BIAS_",
+    if (
+        key.endswith("_PRIORITY")
+        or key.startswith(
+            (
+                "TUSHARE",
+                "TICKFLOW",
+                "AKSHARE",
+                "EFINANCE",
+                "PYTDX",
+                "BAOSTOCK",
+                "YFINANCE",
+                "TAVILY",
+                "SERPAPI",
+                "BRAVE",
+                "BOCHA",
+                "SEARXNG",
+                "NEWS_",
+                "BIAS_",
+            )
         )
-    ) or key in ("ENABLE_REALTIME_QUOTE", "ENABLE_CHIP_DISTRIBUTION"):
+        or key in ("ENABLE_REALTIME_QUOTE", "ENABLE_CHIP_DISTRIBUTION")
+    ):
         return "data_source"
-    if key.startswith((
-        "WECHAT",
-        "FEISHU",
-        "TELEGRAM",
-        "EMAIL",
-        "PUSHOVER",
-        "PUSHPLUS",
-        "SERVERCHAN",
-        "DINGTALK",
-        "DISCORD",
-        "SLACK",
-        "CUSTOM_WEBHOOK",
-        "WECOM",
-        "ASTRBOT",
-    )) or "WEBHOOK" in key:
+    if (
+        key.startswith(
+            (
+                "WECHAT",
+                "FEISHU",
+                "TELEGRAM",
+                "EMAIL",
+                "PUSHOVER",
+                "PUSHPLUS",
+                "SERVERCHAN",
+                "DINGTALK",
+                "DISCORD",
+                "SLACK",
+                "CUSTOM_WEBHOOK",
+                "WECOM",
+                "ASTRBOT",
+            )
+        )
+        or "WEBHOOK" in key
+    ):
         return "notification"
-    if key.startswith(("LOG_", "SCHEDULE_", "WEBUI_", "HTTP_", "HTTPS_", "MAX_", "DEBUG", "MARKET_REVIEW_", "TRADING_DAY_", "ANALYSIS_DELAY")):
+    if key.startswith(
+        (
+            "LOG_",
+            "SCHEDULE_",
+            "WEBUI_",
+            "HTTP_",
+            "HTTPS_",
+            "MAX_",
+            "DEBUG",
+            "MARKET_REVIEW_",
+            "TRADING_DAY_",
+            "ANALYSIS_DELAY",
+        )
+    ):
         return "system"
     return "uncategorized"
 

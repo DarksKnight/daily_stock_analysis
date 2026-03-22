@@ -48,6 +48,7 @@ except (ImportError, ModuleNotFoundError):
         n = str(name).strip()
         return bool(n and n.upper() != str(stock_code).strip().upper())
 
+
 import os
 
 logger = logging.getLogger(__name__)
@@ -116,35 +117,35 @@ class YfinanceFetcher(BaseFetcher):
             return code
 
         # 港股：hk前缀 -> .HK后缀
-        if code.startswith('HK'):
-            hk_code = code[2:].lstrip('0') or '0'  # 去除前导0，但保留至少一个0
+        if code.startswith("HK"):
+            hk_code = code[2:].lstrip("0") or "0"  # 去除前导0，但保留至少一个0
             hk_code = hk_code.zfill(4)  # 补齐到4位
             logger.debug(f"转换港股代码: {stock_code} -> {hk_code}.HK")
             return f"{hk_code}.HK"
 
         # 已经包含后缀的情况
-        if '.SS' in code or '.SZ' in code or '.HK' in code or '.BJ' in code:
+        if ".SS" in code or ".SZ" in code or ".HK" in code or ".BJ" in code:
             return code
 
         # 去除可能的 .SH 后缀
-        code = code.replace('.SH', '')
+        code = code.replace(".SH", "")
 
         # ETF: Shanghai ETF (51xx, 52xx, 56xx, 58xx) -> .SS; Shenzhen ETF (15xx, 16xx, 18xx) -> .SZ
         if len(code) == 6:
-            if code.startswith(('51', '52', '56', '58')):
+            if code.startswith(("51", "52", "56", "58")):
                 return f"{code}.SS"
-            if code.startswith(('15', '16', '18')):
+            if code.startswith(("15", "16", "18")):
                 return f"{code}.SZ"
 
         # BSE (Beijing Stock Exchange): 8xxxxx, 4xxxxx, 920xxx
         if is_bse_code(code):
-            base = code.split('.')[0] if '.' in code else code
+            base = code.split(".")[0] if "." in code else code
             return f"{base}.BJ"
 
         # A股：根据代码前缀判断市场
-        if code.startswith(('600', '601', '603', '688')):
+        if code.startswith(("600", "601", "603", "688")):
             return f"{code}.SS"
-        elif code.startswith(('000', '002', '300')):
+        elif code.startswith(("000", "002", "300")):
             return f"{code}.SZ"
         else:
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
@@ -182,7 +183,7 @@ class YfinanceFetcher(BaseFetcher):
                 end=end_date,
                 progress=False,  # 禁止进度条
                 auto_adjust=True,  # 自动调整价格（复权）
-                multi_level_index=True
+                multi_level_index=True,
             )
 
             # 筛选出 yf_code 的列, 避免多只股票数据混淆
@@ -229,33 +230,33 @@ class YfinanceFetcher(BaseFetcher):
 
         # 列名映射（yfinance 使用首字母大写）
         column_mapping = {
-            'Date': 'date',
-            'Open': 'open',
-            'High': 'high',
-            'Low': 'low',
-            'Close': 'close',
-            'Volume': 'volume',
+            "Date": "date",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
         }
 
         df = df.rename(columns=column_mapping)
 
         # 计算涨跌幅（因为 yfinance 不直接提供）
-        if 'close' in df.columns:
-            df['pct_chg'] = df['close'].pct_change() * 100
-            df['pct_chg'] = df['pct_chg'].fillna(0).round(2)
+        if "close" in df.columns:
+            df["pct_chg"] = df["close"].pct_change() * 100
+            df["pct_chg"] = df["pct_chg"].fillna(0).round(2)
 
         # 计算成交额（yfinance 不提供，使用估算值）
         # 成交额 ≈ 成交量 * 平均价格
-        if 'volume' in df.columns and 'close' in df.columns:
-            df['amount'] = df['volume'] * df['close']
+        if "volume" in df.columns and "close" in df.columns:
+            df["amount"] = df["volume"] * df["close"]
         else:
-            df['amount'] = 0
+            df["amount"] = 0
 
         # 添加股票代码列
-        df['code'] = stock_code
+        df["code"] = stock_code
 
         # 只保留需要的列
-        keep_cols = ['code'] + STANDARD_COLUMNS
+        keep_cols = ["code"] + STANDARD_COLUMNS
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
 
@@ -276,52 +277,55 @@ class YfinanceFetcher(BaseFetcher):
         """
         ticker = yf.Ticker(yf_code)
         # 取近两日数据以计算涨跌幅
-        hist = ticker.history(period='2d')
+        hist = ticker.history(period="2d")
         if hist.empty:
             return None
         today_row = hist.iloc[-1]
         prev_row = hist.iloc[-2] if len(hist) > 1 else today_row
-        price = float(today_row['Close'])
-        prev_close = float(prev_row['Close'])
+        price = float(today_row["Close"])
+        prev_close = float(prev_row["Close"])
         change = price - prev_close
         change_pct = (change / prev_close) * 100 if prev_close else 0
-        high = float(today_row['High'])
-        low = float(today_row['Low'])
+        high = float(today_row["High"])
+        low = float(today_row["Low"])
         # 振幅 = (最高 - 最低) / 昨收 * 100
         amplitude = ((high - low) / prev_close * 100) if prev_close else 0
         return {
-            'code': return_code,
-            'name': name,
-            'current': price,
-            'change': change,
-            'change_pct': change_pct,
-            'open': float(today_row['Open']),
-            'high': high,
-            'low': low,
-            'prev_close': prev_close,
-            'volume': float(today_row['Volume']),
-            'amount': 0.0,  # Yahoo Finance 不提供准确成交额
-            'amplitude': amplitude,
+            "code": return_code,
+            "name": name,
+            "current": price,
+            "change": change,
+            "change_pct": change_pct,
+            "open": float(today_row["Open"]),
+            "high": high,
+            "low": low,
+            "prev_close": prev_close,
+            "volume": float(today_row["Volume"]),
+            "amount": 0.0,  # Yahoo Finance 不提供准确成交额
+            "amplitude": amplitude,
         }
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """
-        获取主要指数行情 (Yahoo Finance)，支持 A 股与美股。
-        region=us 时委托给 _get_us_main_indices。
+        获取主要指数行情 (Yahoo Finance)，支持 A 股、港股与美股。
+        region=us 时委托给 _get_us_main_indices；region=hk 委托给 _get_hk_main_indices。
         """
         import yfinance as yf
 
         if region == "us":
             return self._get_us_main_indices(yf)
 
+        if region == "hk":
+            return self._get_hk_main_indices(yf)
+
         # A 股指数：akshare 代码 -> (yfinance 代码, 显示名称)
         yf_mapping = {
-            'sh000001': ('000001.SS', '上证指数'),
-            'sz399001': ('399001.SZ', '深证成指'),
-            'sz399006': ('399006.SZ', '创业板指'),
-            'sh000688': ('000688.SS', '科创50'),
-            'sh000016': ('000016.SS', '上证50'),
-            'sh000300': ('000300.SS', '沪深300'),
+            "sh000001": ("000001.SS", "上证指数"),
+            "sz399001": ("399001.SZ", "深证成指"),
+            "sz399006": ("399006.SZ", "创业板指"),
+            "sh000688": ("000688.SS", "科创50"),
+            "sh000016": ("000016.SS", "上证50"),
+            "sh000300": ("000300.SS", "沪深300"),
         }
 
         results = []
@@ -344,10 +348,37 @@ class YfinanceFetcher(BaseFetcher):
 
         return None
 
+    def _get_hk_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取港股主要指数行情（恒生指数、恒生科技、恒生国企），复用 _fetch_yf_ticker_data"""
+        hk_indices = [
+            ("^HSI", "恒生指数", "HSI"),
+            ("^HSTECH", "恒生科技", "HSTECH"),
+            ("^HSCE", "恒生国企", "HSCE"),
+        ]
+        results = []
+        try:
+            for yf_symbol, name, code in hk_indices:
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取港股指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取港股指数 {name} 失败: {e}")
+
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个港股指数行情")
+                return results
+
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取港股指数行情失败: {e}")
+
+        return None
+
     def _get_us_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
         """获取美股主要指数行情（SPX、IXIC、DJI、VIX），复用 _fetch_yf_ticker_data"""
         # 大盘复盘所需核心美股指数
-        us_indices = ['SPX', 'IXIC', 'DJI', 'VIX']
+        us_indices = ["SPX", "IXIC", "DJI", "VIX"]
         results = []
         try:
             for code in us_indices:
@@ -472,13 +503,13 @@ class YfinanceFetcher(BaseFetcher):
 
             normalized_first_row = [cell.strip() for cell in first_row]
             header_tokens = {cell.lower() for cell in normalized_first_row if cell}
-            has_header = 'open' in header_tokens and 'close' in header_tokens
+            has_header = "open" in header_tokens and "close" in header_tokens
             row = next(reader, None) if has_header else first_row
             if row is None:
                 raise ValueError(f"unexpected Stooq payload: {payload}")
 
             normalized_row = [cell.strip() for cell in row]
-            while normalized_row and normalized_row[-1] == '':
+            while normalized_row and normalized_row[-1] == "":
                 normalized_row.pop()
 
             if len(normalized_row) >= 8:
@@ -505,7 +536,7 @@ class YfinanceFetcher(BaseFetcher):
 
             quote = UnifiedRealtimeQuote(
                 code=symbol,
-                name=STOCK_NAME_MAP.get(symbol, ''),
+                name=STOCK_NAME_MAP.get(symbol, ""),
                 source=RealtimeSource.STOOQ,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
@@ -557,26 +588,26 @@ class YfinanceFetcher(BaseFetcher):
                 info = ticker.fast_info
                 if info is None:
                     raise ValueError("fast_info is None")
-                price = getattr(info, 'lastPrice', None) or getattr(info, 'last_price', None)
-                prev_close = getattr(info, 'previousClose', None) or getattr(info, 'previous_close', None)
-                open_price = getattr(info, 'open', None)
-                high = getattr(info, 'dayHigh', None) or getattr(info, 'day_high', None)
-                low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
-                volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
+                price = getattr(info, "lastPrice", None) or getattr(info, "last_price", None)
+                prev_close = getattr(info, "previousClose", None) or getattr(info, "previous_close", None)
+                open_price = getattr(info, "open", None)
+                high = getattr(info, "dayHigh", None) or getattr(info, "day_high", None)
+                low = getattr(info, "dayLow", None) or getattr(info, "day_low", None)
+                volume = getattr(info, "lastVolume", None) or getattr(info, "last_volume", None)
             except Exception:
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
-                hist = ticker.history(period='2d')
+                hist = ticker.history(period="2d")
                 if hist.empty:
                     logger.warning(f"[Yfinance] 无法获取 {yf_symbol} 的数据")
                     return None
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
-                price = float(today['Close'])
-                prev_close = float(prev['Close'])
-                open_price = float(today['Open'])
-                high = float(today['High'])
-                low = float(today['Low'])
-                volume = int(today['Volume'])
+                price = float(today["Close"])
+                prev_close = float(prev["Close"])
+                open_price = float(today["Open"])
+                high = float(today["High"])
+                low = float(today["Low"])
+                volume = int(today["Volume"])
 
             change_amount = None
             change_pct = None
@@ -656,18 +687,18 @@ class YfinanceFetcher(BaseFetcher):
                 if info is None:
                     raise ValueError("fast_info is None")
 
-                price = getattr(info, 'lastPrice', None) or getattr(info, 'last_price', None)
-                prev_close = getattr(info, 'previousClose', None) or getattr(info, 'previous_close', None)
-                open_price = getattr(info, 'open', None)
-                high = getattr(info, 'dayHigh', None) or getattr(info, 'day_high', None)
-                low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
-                volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
-                market_cap = getattr(info, 'marketCap', None) or getattr(info, 'market_cap', None)
+                price = getattr(info, "lastPrice", None) or getattr(info, "last_price", None)
+                prev_close = getattr(info, "previousClose", None) or getattr(info, "previous_close", None)
+                open_price = getattr(info, "open", None)
+                high = getattr(info, "dayHigh", None) or getattr(info, "day_high", None)
+                low = getattr(info, "dayLow", None) or getattr(info, "day_low", None)
+                volume = getattr(info, "lastVolume", None) or getattr(info, "last_volume", None)
+                market_cap = getattr(info, "marketCap", None) or getattr(info, "market_cap", None)
 
             except Exception:
                 # 回退到 history 方法获取最新数据
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
-                hist = ticker.history(period='2d')
+                hist = ticker.history(period="2d")
                 if hist.empty:
                     logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
                     return self._get_us_stock_quote_from_stooq(symbol)
@@ -675,12 +706,12 @@ class YfinanceFetcher(BaseFetcher):
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
 
-                price = float(today['Close'])
-                prev_close = float(prev['Close'])
-                open_price = float(today['Open'])
-                high = float(today['High'])
-                low = float(today['Low'])
-                volume = int(today['Volume'])
+                price = float(today["Close"])
+                prev_close = float(prev["Close"])
+                open_price = float(today["Open"])
+                high = float(today["High"])
+                low = float(today["Low"])
+                volume = int(today["Volume"])
                 market_cap = None
 
             # 计算涨跌幅
@@ -697,10 +728,10 @@ class YfinanceFetcher(BaseFetcher):
 
             # 获取股票名称
             try:
-                info_name = ticker.info.get('shortName', '') or ticker.info.get('longName', '') or ''
-                name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, '')
+                info_name = ticker.info.get("shortName", "") or ticker.info.get("longName", "") or ""
+                name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, "")
             except Exception:
-                name = STOCK_NAME_MAP.get(symbol, '')
+                name = STOCK_NAME_MAP.get(symbol, "")
 
             quote = UnifiedRealtimeQuote(
                 code=symbol,
@@ -739,7 +770,7 @@ if __name__ == "__main__":
     fetcher = YfinanceFetcher()
 
     try:
-        df = fetcher.get_daily_data('600519')  # 茅台
+        df = fetcher.get_daily_data("600519")  # 茅台
         print(f"获取成功，共 {len(df)} 条数据")
         print(df.tail())
     except Exception as e:

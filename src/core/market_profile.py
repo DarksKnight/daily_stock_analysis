@@ -35,7 +35,7 @@ CN_PROFILE = MarketProfile(
         "股市 行情 分析",
         "A股 市场 热点 板块",
     ],
-    prompt_index_hint="分析上证、深证、创业板等各指数走势特点",
+    prompt_index_hint="分析上证、深证、创业板等各指数走势特点；同时参考恒生指数、恒生科技指数与A股的联动关系",
     has_market_stats=True,
     has_sector_rankings=True,
 )
@@ -53,9 +53,24 @@ US_PROFILE = MarketProfile(
     has_sector_rankings=False,
 )
 
+HK_PROFILE = MarketProfile(
+    region="hk",
+    mood_index_code="HSI",
+    news_queries=[
+        "港股 大盘 复盘",
+        "恒生指数 行情 分析",
+        "港股 市场 热点 板块",
+    ],
+    prompt_index_hint="分析恒生指数、恒生科技指数、恒生国企指数等各指数走势特点",
+    has_market_stats=False,
+    has_sector_rankings=False,
+)
+
 
 def get_profile(region: str) -> MarketProfile:
     """根据 region 返回对应的 MarketProfile"""
     if region == "us":
         return US_PROFILE
+    if region == "hk":
+        return HK_PROFILE
     return CN_PROFILE

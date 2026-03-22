@@ -84,6 +84,52 @@ CN_BLUEPRINT = MarketStrategyBlueprint(
     ],
 )
 
+HK_BLUEPRINT = MarketStrategyBlueprint(
+    region="hk",
+    title="港股市场三段式复盘策略",
+    positioning="聚焦恒指趋势、南北向资金与行业轮动，形成次日交易计划。",
+    principles=[
+        "先看恒生/科技/国企指数方向，再看成交量结构，最后看板块持续性。",
+        "结论必须映射到仓位、节奏与风险控制动作。",
+        "关注南向/北向资金流向以及港元汇率对市场的影响。",
+        "判断使用当日数据与近3日新闻，不臆测未验证信息。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="趋势结构",
+            objective="判断港股市场处于上升、震荡还是防守阶段。",
+            checkpoints=[
+                "恒生指数/恒生科技/恒生国企是否同向",
+                "放量上涨或缩量下跌是否成立",
+                "关键支撑阻力是否被突破",
+            ],
+        ),
+        StrategyDimension(
+            name="资金情绪",
+            objective="识别短线风险偏好与情绪温度。",
+            checkpoints=[
+                "成交额是否扩张或萎缩",
+                "南向/北向资金净流入/净流出方向",
+                "恒指期货升贴水与波动率信号",
+            ],
+        ),
+        StrategyDimension(
+            name="主线板块",
+            objective="提炼可交易主线与规避方向。",
+            checkpoints=[
+                "互联网/科技/消费/金融等板块轮动方向",
+                "板块内部是否有龙头带动",
+                "领跌板块是否扩散",
+            ],
+        ),
+    ],
+    action_framework=[
+        "进攻：恒指共振上行 + 成交额放大 + 南向资金净流入 + 主线强化。",
+        "均衡：指数分化或缩量震荡，控制仓位并等待确认。",
+        "防守：指数转弱 + 南向资金净流出 + 领跌扩散，优先风控与减仓。",
+    ],
+)
+
 US_BLUEPRINT = MarketStrategyBlueprint(
     region="us",
     title="US Market Regime Strategy",
@@ -132,4 +178,8 @@ US_BLUEPRINT = MarketStrategyBlueprint(
 
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
-    return US_BLUEPRINT if region == "us" else CN_BLUEPRINT
+    if region == "us":
+        return US_BLUEPRINT
+    if region == "hk":
+        return HK_BLUEPRINT
+    return CN_BLUEPRINT
