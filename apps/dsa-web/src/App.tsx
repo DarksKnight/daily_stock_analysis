@@ -1,21 +1,29 @@
-import type React from 'react';
-import { useEffect } from 'react';
-import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import HomePage from './pages/HomePage';
-import BacktestPage from './pages/BacktestPage';
-import SettingsPage from './pages/SettingsPage';
-import LoginPage from './pages/LoginPage';
-import NotFoundPage from './pages/NotFoundPage';
-import ChatPage from './pages/ChatPage';
-import PortfolioPage from './pages/PortfolioPage';
-import { ApiErrorAlert, Shell } from './components/common';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { useAgentChatStore } from './stores/agentChatStore';
-import './App.css';
+import type React from "react";
+import { useEffect } from "react";
+import {
+  BrowserRouter as Router,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
+import HomePage from "./pages/HomePage";
+import BacktestPage from "./pages/BacktestPage";
+import SettingsPage from "./pages/SettingsPage";
+import LoginPage from "./pages/LoginPage";
+import NotFoundPage from "./pages/NotFoundPage";
+import ChatPage from "./pages/ChatPage";
+import PortfolioPage from "./pages/PortfolioPage";
+import SmartSelectPage from "./pages/SmartSelectPage";
+import { ApiErrorAlert, Shell } from "./components/common";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { useAgentChatStore } from "./stores/agentChatStore";
+import "./App.css";
 
 const AppContent: React.FC = () => {
   const location = useLocation();
-  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
+  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } =
+    useAuth();
 
   useEffect(() => {
     useAgentChatStore.getState().setCurrentRoute(location.pathname);
@@ -47,14 +55,14 @@ const AppContent: React.FC = () => {
   }
 
   if (authEnabled && !loggedIn) {
-    if (location.pathname === '/login') {
+    if (location.pathname === "/login") {
       return <LoginPage />;
     }
     const redirect = encodeURIComponent(location.pathname + location.search);
     return <Navigate to={`/login?redirect=${redirect}`} replace />;
   }
 
-  if (location.pathname === '/login') {
+  if (location.pathname === "/login") {
     return <Navigate to="/" replace />;
   }
 
@@ -64,6 +72,7 @@ const AppContent: React.FC = () => {
         <Route path="/" element={<HomePage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
+        <Route path="/smart-select" element={<SmartSelectPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
