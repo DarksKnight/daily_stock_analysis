@@ -1847,6 +1847,10 @@ class AkshareFetcher(BaseFetcher):
             df[change_col] = pd.to_numeric(df[change_col], errors="coerce")
             df = df.dropna(subset=[change_col])
 
+            # 过滤掉非概念板块的特殊池分类
+            _EXCLUDE_CONCEPTS = {"昨日连板", "昨日连板_含一字"}
+            df = df[~df[name_col].isin(_EXCLUDE_CONCEPTS)]
+
             top = df.nlargest(n, change_col)
             top_sectors = [{"name": row[name_col], "change_pct": row[change_col]} for _, row in top.iterrows()]
 
