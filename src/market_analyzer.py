@@ -632,24 +632,16 @@ class MarketAnalyzer:
         if not has_data:
             return ""
         lines = []
-        # 行业板块
-        if overview.top_sectors:
-            top = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:5]])
-            lines.append(f"> 🔥 行业领涨: {top}")
-        if overview.bottom_sectors:
-            bot = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:5]])
-            lines.append(f"> 💧 行业领跌: {bot}")
 
-        # 概念板块
+        # 概念板块（近1日热点追踪）
         if overview.top_concept_sectors or overview.bottom_concept_sectors:
-            lines.append("")
-            lines.append("**今日概念板块涨跌榜**")
+            lines.append("**近1日热点追踪**")
         if overview.top_concept_sectors:
             top_c = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]])
             lines.append(f"> 🚀 概念领涨: {top_c}")
         if overview.bottom_concept_sectors:
             bot_c = " | ".join(
-                [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:5]]
+                [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:10]]
             )
             lines.append(f"> 🔻 概念领跌: {bot_c}")
 
@@ -770,8 +762,8 @@ class MarketAnalyzer:
             parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]]
             lines.append("领涨概念(Top10): " + " | ".join(parts))
         if overview.bottom_concept_sectors:
-            parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:5]]
-            lines.append("领跌概念(Top5): " + " | ".join(parts))
+            parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:10]]
+            lines.append("领跌概念(Top10): " + " | ".join(parts))
         return "\n".join(lines)
 
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
