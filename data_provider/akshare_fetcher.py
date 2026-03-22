@@ -1809,6 +1809,48 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
 
+    def get_concept_sector_rankings(self, n: int = 10) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取概念板块涨跌榜（东财接口）
+
+        数据源：ak.stock_board_concept_name_em()
+        """
+        import akshare as ak
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_board_concept_name_em() 获取概念板块排行...")
+            df = ak.stock_board_concept_name_em()
+            if df is None or df.empty:
+                logger.warning("[Akshare] 概念板块数据为空")
+                return None
+
+            change_col = "涨跌幅"
+            name_col = "板块名称"
+            if change_col not in df.columns or name_col not in df.columns:
+                # 兼容列名差异
+                if "涨跌幅" not in df.columns:
+                    logger.warning("[Akshare] 概念板块数据缺少 涨跌幅 列，可用列: %s", list(df.columns))
+                    return None
+
+            df[change_col] = pd.to_numeric(df[change_col], errors="coerce")
+            df = df.dropna(subset=[change_col])
+
+            top = df.nlargest(n, change_col)
+            top_sectors = [{"name": row[name_col], "change_pct": row[change_col]} for _, row in top.iterrows()]
+
+            bottom = df.nsmallest(n, change_col)
+            bottom_sectors = [{"name": row[name_col], "change_pct": row[change_col]} for _, row in bottom.iterrows()]
+
+            logger.info("[Akshare] 概念板块排行获取成功，领涨: %s", [s["name"] for s in top_sectors[:3]])
+            return top_sectors, bottom_sectors
+
+        except Exception as e:
+            logger.error("[Akshare] 获取概念板块排行失败: %s", e)
+            return None
+
     def get_sector_limit_stats(self, trade_date: Optional[str] = None) -> Optional[List[Dict]]:
         """
         获取板块涨停/跌停家数统计（仅支持 A 股）。

@@ -338,6 +338,18 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_concept_sector_rankings(self, n: int = 10) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取概念板块涨跌榜
+
+        Args:
+            n: 返回前n个
+
+        Returns:
+            Tuple: (领涨概念板块列表, 领跌概念板块列表)，每项含 name, change_pct
+        """
+        return None
+
     def get_daily_data(
         self, stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None, days: int = 30
     ) -> pd.DataFrame:
@@ -2297,3 +2309,17 @@ class DataFetcherManager:
             except Exception as e:
                 logger.warning("[%s] 获取板块涨跌停统计失败: %s", fetcher.name, e)
         return []
+
+    def get_concept_sector_rankings(self, n: int = 10) -> Tuple[List[Dict], List[Dict]]:
+        """获取概念板块涨跌榜（自动切换数据源）"""
+        for fetcher in self._fetchers:
+            if not hasattr(fetcher, "get_concept_sector_rankings"):
+                continue
+            try:
+                data = fetcher.get_concept_sector_rankings(n)
+                if data and data[0] is not None and data[1] is not None:
+                    logger.info("[%s] 获取概念板块排行成功", fetcher.name)
+                    return data[0], data[1]
+            except Exception as e:
+                logger.warning("[%s] 获取概念板块排行失败: %s", fetcher.name, e)
+        return [], []

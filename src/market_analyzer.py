@@ -76,8 +76,11 @@ class MarketOverview:
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
 
     # 板块涨幅榜
-    top_sectors: List[Dict] = field(default_factory=list)  # 涨幅前5板块
-    bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+    top_sectors: List[Dict] = field(default_factory=list)  # 行业涨幅前5板块
+    bottom_sectors: List[Dict] = field(default_factory=list)  # 行业跌幅前5板块
+    # 概念板块涨跌榜
+    top_concept_sectors: List[Dict] = field(default_factory=list)  # 概念涨幅前10板块
+    bottom_concept_sectors: List[Dict] = field(default_factory=list)  # 概念跌幅前10板块
     # 近 N 日领涨/领跌统计（由 MarketAnalyzer 计算填充）
     sector_trend: List[Dict] = field(default_factory=list)
     # 按涨停/跌停家数排名的板块榜（前10，仅 A 股）
@@ -140,7 +143,11 @@ class MarketAnalyzer:
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
 
-        # 4. 获取板块涨停/跌停家数排行（A 股独有）
+        # 4. 获取概念板块涨跌榜（A 股独有）
+        if self.profile.has_sector_rankings:
+            self._get_concept_sector_rankings(overview)
+
+        # 5. 获取板块涨停/跌停家数排行（A 股独有）
         if self.profile.has_sector_rankings:
             self._get_sector_limit_rankings(overview)
 
@@ -306,6 +313,19 @@ class MarketAnalyzer:
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
     #     ...
+
+    def _get_concept_sector_rankings(self, overview: MarketOverview) -> None:
+        """获取概念板块涨跌榜（A 股独有）"""
+        try:
+            logger.info("[大盘] 获取概念板块涨跌榜...")
+            top_concept, bottom_concept = self.data_manager.get_concept_sector_rankings(10)
+            if top_concept or bottom_concept:
+                overview.top_concept_sectors = top_concept
+                overview.bottom_concept_sectors = bottom_concept
+                logger.info("[大盘] 领涨概念: %s", [s["name"] for s in overview.top_concept_sectors[:5]])
+                logger.info("[大盘] 领跌概念: %s", [s["name"] for s in overview.bottom_concept_sectors[:5]])
+        except Exception as e:
+            logger.error("[大盘] 获取概念板块涨跌榜失败: %s", e)
 
     def _get_sector_limit_rankings(self, overview: MarketOverview) -> None:
         """获取板块涨停/跌停家数排行，并保存到数据库。"""
@@ -596,18 +616,34 @@ class MarketAnalyzer:
         has_data = (
             overview.top_sectors
             or overview.bottom_sectors
+            or overview.top_concept_sectors
+            or overview.bottom_concept_sectors
             or overview.sector_up_limit_ranking
             or overview.sector_down_limit_ranking
         )
         if not has_data:
             return ""
         lines = []
+        # 行业板块
         if overview.top_sectors:
             top = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:5]])
-            lines.append(f"> 🔥 领涨(涨幅): {top}")
+            lines.append(f"> 🔥 行业领涨: {top}")
         if overview.bottom_sectors:
             bot = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:5]])
-            lines.append(f"> 💧 领跌(跌幅): {bot}")
+            lines.append(f"> 💧 行业领跌: {bot}")
+
+        # 概念板块
+        if overview.top_concept_sectors or overview.bottom_concept_sectors:
+            lines.append("")
+            lines.append("**今日概念板块涨跌榜**")
+        if overview.top_concept_sectors:
+            top_c = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]])
+            lines.append(f"> 🚀 概念领涨: {top_c}")
+        if overview.bottom_concept_sectors:
+            bot_c = " | ".join(
+                [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:5]]
+            )
+            lines.append(f"> 🔻 概念领跌: {bot_c}")
 
         # 涨停/跌停数量榜
         limit_block = self._build_sector_limit_block(overview)
@@ -717,6 +753,19 @@ class MarketAnalyzer:
             lines.append("近期持续领跌: " + " | ".join(parts))
         return "\n".join(lines)
 
+    def _build_concept_text_for_prompt(self, overview: MarketOverview) -> str:
+        """将概念板块涨跌榜汇总成 Prompt 可用的简洁纯文本。"""
+        if not overview.top_concept_sectors and not overview.bottom_concept_sectors:
+            return ""
+        lines = ["## 概念板块涨跌榜"]
+        if overview.top_concept_sectors:
+            parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]]
+            lines.append("领涨概念(Top10): " + " | ".join(parts))
+        if overview.bottom_concept_sectors:
+            parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:5]]
+            lines.append("领跌概念(Top5): " + " | ".join(parts))
+        return "\n".join(lines)
+
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
         # 指数行情信息（简洁格式，不用emoji）
@@ -733,6 +782,8 @@ class MarketAnalyzer:
         trend_text = self._build_trend_text_for_prompt(overview)
         # 板块涨停/跌停家数排行文本
         limit_text = self._build_limit_text_for_prompt(overview)
+        # 概念板块涨跌文本
+        concept_text = self._build_concept_text_for_prompt(overview)
 
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
@@ -799,11 +850,13 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}
                     stats_block = "## 市场概况\n（美股暂无涨跌家数等统计）"
 
             if self.profile.has_sector_rankings:
-                sector_block = f"""## 板块表现
+                sector_block = f"""## 行业板块表现
 领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
 领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
 {limit_text}
-{trend_text}"""
+{trend_text}
+
+{concept_text}"""
             else:
                 if self.region == "hk":
                     sector_block = "## 板块表现\n（港股暂无板块行业数据）"
@@ -943,7 +996,7 @@ Output the report content directly, no extra commentary.
 （解读成交额流向的含义）
 
 ### 四、热点解读
-（分析当日领涨领跌板块背后的逻辑和驱动因素；结合近多日板块领涨/领跌统计，分析主线板块连续性与轮动方向）
+（分析当日领涨领跌**行业板块**背后的逻辑和驱动因素；重点梳理今日**概念板块**涨幅榜前列的主题逻辑（如 AI、低空经济、新能源等热门概念），识别资金集中流入的主线概念；结合近多日板块领涨/领跌统计，分析主线板块连续性与轮动方向）
 
 ### 五、后市展望
 （结合当前走势和新闻，给出明日市场预判）
