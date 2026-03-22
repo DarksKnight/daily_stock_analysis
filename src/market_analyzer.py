@@ -69,8 +69,10 @@ class MarketOverview:
     up_count: int = 0  # 上涨家数
     down_count: int = 0  # 下跌家数
     flat_count: int = 0  # 平盘家数
-    limit_up_count: int = 0  # 涨停家数
-    limit_down_count: int = 0  # 跌停家数
+    limit_up_count: int = 0  # 涨停家数（含ST）
+    limit_down_count: int = 0  # 跌停家数（含ST）
+    non_st_limit_up_count: int = 0  # 非ST涨停家数
+    non_st_limit_down_count: int = 0  # 非ST跌停家数
     total_amount: float = 0.0  # 两市成交额（亿元）
     prev_total_amount: float = 0.0  # 前一交易日成交额（亿元），0 表示无历史数据
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
@@ -246,11 +248,14 @@ class MarketAnalyzer:
                 overview.flat_count = stats.get("flat_count", 0)
                 overview.limit_up_count = stats.get("limit_up_count", 0)
                 overview.limit_down_count = stats.get("limit_down_count", 0)
+                overview.non_st_limit_up_count = stats.get("non_st_limit_up_count", 0)
+                overview.non_st_limit_down_count = stats.get("non_st_limit_down_count", 0)
                 overview.total_amount = stats.get("total_amount", 0.0)
 
                 logger.info(
                     f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
-                    f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
+                    f"涨停:{overview.limit_up_count}(非ST:{overview.non_st_limit_up_count}) "
+                    f"跌停:{overview.limit_down_count}(非ST:{overview.non_st_limit_down_count}) "
                     f"成交额:{overview.total_amount:.0f}亿"
                 )
 
@@ -277,6 +282,8 @@ class MarketAnalyzer:
                 flat_count=overview.flat_count,
                 limit_up_count=overview.limit_up_count,
                 limit_down_count=overview.limit_down_count,
+                non_st_limit_up_count=overview.non_st_limit_up_count,
+                non_st_limit_down_count=overview.non_st_limit_down_count,
             )
             prev = db.get_prev_market_daily_stats(region=self.region, before_date=today)
             if prev:
@@ -588,7 +595,8 @@ class MarketAnalyzer:
         lines = [
             f"> {breadth_tag}  上涨 **{overview.up_count}** 家 / 下跌 **{overview.down_count}** 家 / "
             f"平盘 **{overview.flat_count}** 家 | "
-            f"涨停 **{overview.limit_up_count}** / 跌停 **{overview.limit_down_count}** | "
+            f"涨停 **{overview.limit_up_count}**（非ST **{overview.non_st_limit_up_count}**）/ "
+            f"跌停 **{overview.limit_down_count}**（非ST **{overview.non_st_limit_down_count}**）| "
             f"{amount_str}"
         ]
         return "\n".join(lines)
@@ -841,7 +849,7 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}
 
                 stats_block = f"""## 市场概况
 - {breadth_desc}
-- 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
+- 涨停: {overview.limit_up_count} 家（其中非ST涨停: {overview.non_st_limit_up_count} 家）| 跌停: {overview.limit_down_count} 家（其中非ST跌停: {overview.non_st_limit_down_count} 家）
 - 两市成交额: {amount_desc}"""
             else:
                 if self.region == "hk":
@@ -945,6 +953,15 @@ Output the report content directly, no extra commentary.
 
         # A 股 / 港股场景使用中文提示语（相同的七段式结构）
         market_label = "A股" if self.region == "cn" else "港股"
+        if self.region == "cn":
+            sentiment_hint = (
+                f"全市场涨多跌少还是跌多涨少？"
+                f"非ST涨停 {overview.non_st_limit_up_count} 家（含ST总计 {overview.limit_up_count} 家）/ "
+                f"非ST跌停 {overview.non_st_limit_down_count} 家（含ST总计 {overview.limit_down_count} 家），"
+                f"是否反映情绪过热或恐慌？"
+            )
+        else:
+            sentiment_hint = "港股成交量是否放大？南北向资金净流向如何？"
         return f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的{market_label}大盘复盘报告。
 
 【重要】输出要求：
@@ -986,7 +1003,7 @@ Output the report content directly, no extra commentary.
 **市场环境研判（必填）：**
 根据以下维度作出明确结论：
 1. 量能：今日成交额与前日对比，是放量、缩量还是持平？
-2. 人气：{f"全市场涨多跌少还是跌多涨少？涨停/跌停家数是否反映情绪过热或恐慌？" if self.region == "cn" else "港股成交量是否放大？南北向资金净流向如何？"}
+2. 人气：{sentiment_hint}
 3. 综合判断：当前市场环境 **适合积极做多 / 谨慎操作 / 观望为主**，并给出一句理由。
 
 ### 二、指数点评
@@ -1053,8 +1070,10 @@ Output the report content directly, no extra commentary.
 |------|------|
 | 上涨家数 | {overview.up_count} |
 | 下跌家数 | {overview.down_count} |
-| 涨停 | {overview.limit_up_count} |
-| 跌停 | {overview.limit_down_count} |
+| 涨停（含ST） | {overview.limit_up_count} |
+| 涨停（非ST） | {overview.non_st_limit_up_count} |
+| 跌停（含ST） | {overview.limit_down_count} |
+| 跌停（非ST） | {overview.non_st_limit_down_count} |
 | 两市成交额 | {overview.total_amount:.0f}亿 |
 """
         sector_section = ""

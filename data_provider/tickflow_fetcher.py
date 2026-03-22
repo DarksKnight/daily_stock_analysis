@@ -96,17 +96,11 @@ class TickFlowFetcher(BaseFetcher):
                 self._client = self._build_client()
             return self._client
 
-    def _fetch_raw_data(
-        self, stock_code: str, start_date: str, end_date: str
-    ) -> pd.DataFrame:
-        raise DataFetchError(
-            "TickFlowFetcher P0 only supports market review endpoints"
-        )
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        raise DataFetchError("TickFlowFetcher P0 only supports market review endpoints")
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
-        raise DataFetchError(
-            "TickFlowFetcher P0 only supports market review endpoints"
-        )
+        raise DataFetchError("TickFlowFetcher P0 only supports market review endpoints")
 
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:
@@ -134,9 +128,7 @@ class TickFlowFetcher(BaseFetcher):
     def _is_universe_permission_error(exc: Exception) -> bool:
         status_code = getattr(exc, "status_code", None)
         code = str(getattr(exc, "code", "") or "").upper()
-        message = (
-            f"{getattr(exc, 'message', '')} {exc}"
-        ).strip().lower()
+        message = (f"{getattr(exc, 'message', '')} {exc}").strip().lower()
 
         if status_code == 403:
             return True
@@ -156,11 +148,7 @@ class TickFlowFetcher(BaseFetcher):
     def _is_cn_equity_symbol(symbol: str) -> bool:
         normalized = normalize_stock_code(symbol)
         upper_symbol = (symbol or "").strip().upper()
-        return (
-            normalized.isdigit()
-            and len(normalized) == 6
-            and upper_symbol.endswith((".SH", ".SZ", ".BJ"))
-        )
+        return normalized.isdigit() and len(normalized) == 6 and upper_symbol.endswith((".SH", ".SZ", ".BJ"))
 
     @staticmethod
     def _round_limit_price(prev_close: float, ratio: float) -> float:
@@ -196,9 +184,7 @@ class TickFlowFetcher(BaseFetcher):
             logger.warning("[TickFlowFetcher] 指数行情为空")
             return None
 
-        quotes_by_symbol = {
-            str(item.get("symbol", "")).upper(): item for item in quotes if item
-        }
+        quotes_by_symbol = {str(item.get("symbol", "")).upper(): item for item in quotes if item}
         results: List[Dict[str, Any]] = []
 
         for symbol, code, name in _CN_MAIN_INDEX_QUOTES:
@@ -254,10 +240,7 @@ class TickFlowFetcher(BaseFetcher):
         now = monotonic()
         if self._universe_query_supported is False:
             checked_at = self._universe_query_checked_at or 0.0
-            if (
-                now - checked_at
-                < _UNIVERSE_PERMISSION_NEGATIVE_CACHE_TTL_SECONDS
-            ):
+            if now - checked_at < _UNIVERSE_PERMISSION_NEGATIVE_CACHE_TTL_SECONDS:
                 return None
             self._universe_query_supported = None
             self._universe_query_checked_at = None
@@ -270,9 +253,7 @@ class TickFlowFetcher(BaseFetcher):
             if self._is_universe_permission_error(exc):
                 self._universe_query_supported = False
                 self._universe_query_checked_at = now
-                logger.info(
-                    "[TickFlowFetcher] 当前套餐不支持标的池查询，市场统计回退到现有数据源"
-                )
+                logger.info("[TickFlowFetcher] 当前套餐不支持标的池查询，市场统计回退到现有数据源")
                 return None
             raise
         if not quotes:
@@ -285,6 +266,8 @@ class TickFlowFetcher(BaseFetcher):
             "flat_count": 0,
             "limit_up_count": 0,
             "limit_down_count": 0,
+            "non_st_limit_up_count": 0,
+            "non_st_limit_down_count": 0,
             "total_amount": 0.0,
         }
         valid_rows = 0
@@ -312,20 +295,23 @@ class TickFlowFetcher(BaseFetcher):
             if not name:
                 logger.debug("[TickFlowFetcher] 缺少股票名称，按非 ST 处理: %s", symbol)
 
+            _is_st = is_st_stock(name) if name else False
             ratio = self._get_limit_ratio(pure_code, name)
             limit_up = self._round_limit_price(prev_close, ratio)
             limit_down = math.floor(prev_close * (1 - ratio) * 100 + 0.5) / 100.0
             limit_up_tolerance = round(abs(prev_close * (1 + ratio) - limit_up), 10)
-            limit_down_tolerance = round(
-                abs(prev_close * (1 - ratio) - limit_down), 10
-            )
+            limit_down_tolerance = round(abs(prev_close * (1 - ratio) - limit_down), 10)
 
             valid_rows += 1
 
             if abs(last_price - limit_up) <= limit_up_tolerance:
                 stats["limit_up_count"] += 1
+                if not _is_st:
+                    stats["non_st_limit_up_count"] += 1
             if abs(last_price - limit_down) <= limit_down_tolerance:
                 stats["limit_down_count"] += 1
+                if not _is_st:
+                    stats["non_st_limit_down_count"] += 1
 
             if last_price > prev_close:
                 stats["up_count"] += 1

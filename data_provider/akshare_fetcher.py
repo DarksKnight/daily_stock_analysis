@@ -1675,6 +1675,8 @@ class AkshareFetcher(BaseFetcher):
 
         limit_up_count = 0
         limit_down_count = 0
+        non_st_limit_up_count = 0
+        non_st_limit_down_count = 0
         up_count = 0
         down_count = 0
         flat_count = 0
@@ -1701,11 +1703,12 @@ class AkshareFetcher(BaseFetcher):
             pure_code = normalize_stock_code(str(code))
 
             # A. 确定每只股票的涨跌幅比例 (使用纯数字代码判断)
+            _is_st = is_st_stock(name)
             if is_bse_code(pure_code):
                 ratio = 0.30
             elif is_kc_cy_stock(pure_code):  # pure_code.startswith(('688', '30')):
                 ratio = 0.20
-            elif is_st_stock(name):  #'ST' in str_name:
+            elif _is_st:
                 ratio = 0.05
             else:
                 ratio = 0.10
@@ -1726,8 +1729,12 @@ class AkshareFetcher(BaseFetcher):
 
                 if is_limit_up:
                     limit_up_count += 1
+                    if not _is_st:
+                        non_st_limit_up_count += 1
                 if is_limit_down:
                     limit_down_count += 1
+                    if not _is_st:
+                        non_st_limit_down_count += 1
 
                 if current_price > pre_close:
                     up_count += 1
@@ -1743,6 +1750,8 @@ class AkshareFetcher(BaseFetcher):
             "flat_count": flat_count,
             "limit_up_count": limit_up_count,
             "limit_down_count": limit_down_count,
+            "non_st_limit_up_count": non_st_limit_up_count,
+            "non_st_limit_down_count": non_st_limit_down_count,
             "total_amount": 0.0,
         }
 

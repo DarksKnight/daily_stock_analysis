@@ -672,6 +672,10 @@ class MarketDailyStats(Base):
     limit_up_count = Column(Integer, nullable=False, default=0)
     # 跌停家数
     limit_down_count = Column(Integer, nullable=False, default=0)
+    # 非ST涨停家数
+    non_st_limit_up_count = Column(Integer, nullable=False, default=0)
+    # 非ST跌停家数
+    non_st_limit_down_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.now)
 
     __table_args__ = (UniqueConstraint("trade_date", "region", name="uq_market_daily_stats"),)
@@ -770,6 +774,9 @@ class DatabaseManager:
         # 创建所有表
         Base.metadata.create_all(self._engine)
 
+        # 增量列迁移：为已有实例补充新增字段（兼容旧 SQLite DB，错误静默）
+        self._apply_column_migrations()
+
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
 
@@ -808,6 +815,22 @@ class DatabaseManager:
                 logger.debug("数据库引擎已清理")
         except Exception as e:
             logger.warning(f"清理数据库引擎时出错: {e}")
+
+    def _apply_column_migrations(self) -> None:
+        """为已有 SQLite 数据库补充新增列（ADD COLUMN IF NOT EXISTS 兼容写法）。"""
+        migrations = [
+            ("market_daily_stats", "non_st_limit_up_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("market_daily_stats", "non_st_limit_down_count", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        with self._engine.connect() as conn:
+            for table, column, col_def in migrations:
+                try:
+                    conn.execute(__import__("sqlalchemy").text(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}"))
+                    conn.commit()
+                    logger.debug("DB migration: added column %s.%s", table, column)
+                except Exception:
+                    # 列已存在或其他 DB 不支持时静默跳过
+                    pass
 
     def get_session(self) -> Session:
         """
@@ -2109,6 +2132,8 @@ class DatabaseManager:
         flat_count: int = 0,
         limit_up_count: int = 0,
         limit_down_count: int = 0,
+        non_st_limit_up_count: int = 0,
+        non_st_limit_down_count: int = 0,
     ) -> None:
         """保存当日市场统计快照（upsert，幂等）。"""
         try:
@@ -2131,6 +2156,8 @@ class DatabaseManager:
                         flat_count=flat_count,
                         limit_up_count=limit_up_count,
                         limit_down_count=limit_down_count,
+                        non_st_limit_up_count=non_st_limit_up_count,
+                        non_st_limit_down_count=non_st_limit_down_count,
                     )
                 )
             logger.debug(
@@ -2182,6 +2209,8 @@ class DatabaseManager:
                     "flat_count": row.flat_count,
                     "limit_up_count": row.limit_up_count,
                     "limit_down_count": row.limit_down_count,
+                    "non_st_limit_up_count": getattr(row, "non_st_limit_up_count", 0) or 0,
+                    "non_st_limit_down_count": getattr(row, "non_st_limit_down_count", 0) or 0,
                 }
         except Exception as exc:
             logger.warning("[大盘] 读取前一日市场统计失败: %s", exc)
