@@ -12,6 +12,7 @@ from api.v1.endpoints import (
     health,
     analysis,
     history,
+    market_review,
     stocks,
     backtest,
     system_config,
@@ -20,10 +21,12 @@ from api.v1.endpoints import (
     usage,
     portfolio,
 )
+
 __all__ = [
     "health",
     "analysis",
     "history",
+    "market_review",
     "stocks",
     "backtest",
     "system_config",

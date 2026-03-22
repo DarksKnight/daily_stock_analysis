@@ -8,6 +8,7 @@ import {
   MessageSquareQuote,
   Settings2,
   SlidersHorizontal,
+  TrendingUp,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
@@ -50,6 +51,12 @@ const NAV_ITEMS: NavItem[] = [
     label: "选股",
     to: "/smart-select",
     icon: SlidersHorizontal,
+  },
+  {
+    key: "market-review",
+    label: "复盘",
+    to: "/market-review",
+    icon: TrendingUp,
   },
   { key: "backtest", label: "回测", to: "/backtest", icon: BarChart3 },
   { key: "settings", label: "设置", to: "/settings", icon: Settings2 },

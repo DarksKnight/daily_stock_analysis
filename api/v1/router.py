@@ -15,6 +15,7 @@ from api.v1.endpoints import (
     analysis,
     auth,
     history,
+    market_review,
     stocks,
     backtest,
     system_config,
@@ -46,3 +47,5 @@ router.include_router(usage.router, prefix="/usage", tags=["Usage"])
 router.include_router(portfolio.router, prefix="/portfolio", tags=["Portfolio"])
 
 router.include_router(smart_select.router, prefix="/smart-select", tags=["SmartSelect"])
+
+router.include_router(market_review.router, prefix="/market-review", tags=["MarketReview"])
