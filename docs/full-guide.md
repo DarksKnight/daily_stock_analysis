@@ -289,18 +289,18 @@ daily_stock_analysis/
 
 ### 其他配置
 
-| 变量名                      | 说明                                                                                                                                              | 默认值   |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `STOCK_LIST`                | 自选股代码（逗号分隔）                                                                                                                            | -        |
-| `ADMIN_AUTH_ENABLED`        | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password` | `false`  |
-| `TRUST_X_FORWARDED_FOR`     | 反向代理部署时设为 `true`，从 `X-Forwarded-For` 获取真实 IP（限流等）；直连公网时保持 `false` 防伪造                                              | `false`  |
-| `MAX_WORKERS`               | 并发线程数                                                                                                                                        | `3`      |
-| `MARKET_REVIEW_ENABLED`     | 启用大盘复盘                                                                                                                                      | `true`   |
-| `MARKET_REVIEW_REGION`      | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、both(A股+美股)、all(A股+港股+美股)                                                                 | `cn`     |
-| `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373）                                             | `true`   |
-| `SCHEDULE_ENABLED`          | 启用定时任务                                                                                                                                      | `false`  |
-| `SCHEDULE_TIME`             | 定时执行时间                                                                                                                                      | `18:00`  |
-| `LOG_DIR`                   | 日志目录                                                                                                                                          | `./logs` |
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `STOCK_LIST` | 自选股代码（逗号分隔） | - |
+| `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password` | `false` |
+| `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
+| `MAX_WORKERS` | 并发线程数 | `3` |
+| `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
+| `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户 | `cn` |
+| `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
+| `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
+| `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
+| `LOG_DIR` | 日志目录 | `./logs` |
 
 ---
 
@@ -503,6 +503,8 @@ python main.py --schedule
 # 启动定时模式（启动时不执行，仅等待下次定时触发）
 python main.py --schedule --no-run-immediately
 ```
+
+> 说明：定时模式每次触发前都会重新读取当前保存的 `STOCK_LIST`。如果同时传入 `--stocks`，该参数不会锁定后续计划执行的股票列表；需要临时只跑指定股票时，请使用非定时的单次运行命令。
 
 #### 环境变量方式
 

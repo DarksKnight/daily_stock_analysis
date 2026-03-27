@@ -1000,6 +1000,7 @@ class DataFetcherManager:
         Returns:
             UnifiedRealtimeQuote 对象，所有数据源都失败则返回 None
         """
+        raw_stock_code = (stock_code or "").strip()
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
@@ -1116,8 +1117,8 @@ class DataFetcherManager:
                     # 尝试 TushareFetcher（需要 Tushare Pro 积分）
                     for fetcher in self._fetchers:
                         if fetcher.name == "TushareFetcher":
-                            if hasattr(fetcher, "get_realtime_quote"):
-                                quote = fetcher.get_realtime_quote(stock_code)
+                            if hasattr(fetcher, 'get_realtime_quote'):
+                                quote = fetcher.get_realtime_quote(raw_stock_code or stock_code)
                             break
 
                 if quote is not None and quote.has_basic_data():
@@ -1275,6 +1276,7 @@ class DataFetcherManager:
         Returns:
             股票中文名称，所有数据源都失败则返回 None
         """
+        raw_stock_code = (stock_code or "").strip()
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
         static_name = STOCK_NAME_MAP.get(stock_code)
@@ -1289,8 +1291,8 @@ class DataFetcherManager:
 
         # 2. 尝试从实时行情中获取（最快，可按需禁用）
         if allow_realtime:
-            quote = self.get_realtime_quote(stock_code)
-            if quote and hasattr(quote, "name") and is_meaningful_stock_name(getattr(quote, "name", ""), stock_code):
+            quote = self.get_realtime_quote(raw_stock_code or stock_code)
+            if quote and hasattr(quote, 'name') and is_meaningful_stock_name(getattr(quote, 'name', ''), stock_code):
                 name = quote.name
                 self._stock_name_cache[stock_code] = name
                 logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")

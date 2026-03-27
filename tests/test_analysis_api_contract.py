@@ -407,6 +407,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    notify=True,
                 ),
                 config=SimpleNamespace(),
             )
@@ -420,6 +421,77 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             selection_source="manual",
             report_type="detailed",
             force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_accepts_hk_suffix_code_from_autocomplete(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="00700.HK",
+                    stock_codes=None,
+                    stock_name="腾讯控股",
+                    original_query="00700",
+                    selection_source="autocomplete",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_mock.assert_not_called()
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["00700.HK"],
+            stock_name="腾讯控股",
+            original_query="00700",
+            selection_source="autocomplete",
+            report_type="detailed",
+            force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_accepts_hk_prefixed_code(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="HK00700",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="HK00700",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_mock.assert_not_called()
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["HK00700"],
+            stock_name=None,
+            original_query="HK00700",
+            selection_source="manual",
+            report_type="detailed",
+            force_refresh=False,
+            notify=True,
         )
 
     def test_trigger_analysis_allows_stock_names_with_star_and_hyphen(self) -> None:
@@ -441,6 +513,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    notify=True,
                 ),
                 config=SimpleNamespace(),
             )
@@ -453,6 +526,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             selection_source="manual",
             report_type="detailed",
             force_refresh=False,
+            notify=True,
         )
 
     def test_trigger_analysis_accepts_resolvable_free_text_input(self) -> None:
@@ -474,6 +548,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    notify=True,
                 ),
                 config=SimpleNamespace(),
             )
@@ -486,6 +561,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             selection_source="manual",
             report_type="detailed",
             force_refresh=False,
+            notify=True,
         )
 
     def test_trigger_analysis_preserves_batch_metadata(self) -> None:
@@ -506,6 +582,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    notify=True,
                 ),
                 config=SimpleNamespace(),
             )
@@ -518,6 +595,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             selection_source="import",
             report_type="detailed",
             force_refresh=False,
+            notify=True,
         )
 
     def test_trigger_analysis_rejects_cross_request_duplicate_for_equivalent_code_shapes(self) -> None:
@@ -541,6 +619,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         report_type="detailed",
                         force_refresh=False,
                         async_mode=True,
+                        notify=True,
                     ),
                     config=SimpleNamespace(),
                 )
@@ -554,6 +633,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         report_type="detailed",
                         force_refresh=False,
                         async_mode=True,
+                        notify=True,
                     ),
                     config=SimpleNamespace(),
                 )
@@ -592,6 +672,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    notify=True,
                 ),
                 config=SimpleNamespace(),
             )
@@ -604,6 +685,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             selection_source="import",
             report_type="detailed",
             force_refresh=False,
+            notify=True,
         )
 
     def test_spa_fallback_returns_json_404_for_bare_api_path(self) -> None:
