@@ -1,22 +1,20 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-大盘复盘分析模块
+大盘复盘分析模块（支持 A 股 / 港股 / 美股）
 ===================================
 
 职责：
-1. 获取大盘指数数据（上证、深证、创业板）
+1. 获取大盘指数数据（上证、深证、创业板 / 港股 / 美股）
 2. 搜索市场新闻形成复盘情报
 3. 使用大模型生成每日大盘复盘报告
 """
 
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, Any, List
-
-import pandas as pd
 
 from src.config import get_config
 from src.search_service import SearchService
@@ -25,6 +23,29 @@ from src.core.market_strategy import get_market_strategy_blueprint
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prompt directory (relative to this file: src/../prompts/)
+# ---------------------------------------------------------------------------
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
+
+def _load_review_prompt_template(region: str) -> str:
+    """从 prompts/ 目录加载大盘复盘 Prompt 模板文件。
+
+    Args:
+        region: 'cn' / 'hk' => market_review_cn.md; 'us' => market_review_us.md
+
+    Returns:
+        带有 {placeholder} 占位符的模板字符串（找不到文件时抛出 FileNotFoundError）
+    """
+    filename = "market_review_us.md" if region == "us" else "market_review_cn.md"
+    filepath = _PROMPTS_DIR / filename
+    if filepath.exists():
+        content = filepath.read_text(encoding="utf-8")
+        logger.debug(f"[MarketAnalyzer] 已加载复盘 Prompt 模板: {filepath}")
+        return content
+    raise FileNotFoundError(f"大盘复盘 Prompt 模板文件不存在: {filepath}。" "请确保 prompts/ 目录下包含模板文件。")
 
 
 @dataclass
@@ -65,29 +86,44 @@ class MarketOverview:
     """市场概览数据"""
 
     date: str  # 日期
-    indices: List[MarketIndex] = field(default_factory=list)  # 主要指数
+    # 主要指数（A股 / 美股 / 港股主指数）
+    indices: List[MarketIndex] = field(default_factory=list)
+    # 港股主要指数（仅 cn 区域，辅助 A 股复盘参考）
+    hk_indices: List[MarketIndex] = field(default_factory=list)
+    # 涨跌家数统计
     up_count: int = 0  # 上涨家数
     down_count: int = 0  # 下跌家数
     flat_count: int = 0  # 平盘家数
-    limit_up_count: int = 0  # 涨停家数（含ST）
+    limit_up_count: int = 0  # 涨停家数（含ST，主板±10%/创业板科创板±20%）
     limit_down_count: int = 0  # 跌停家数（含ST）
-    non_st_limit_up_count: int = 0  # 非ST涨停家数
+    non_st_limit_up_count: int = 0  # 非ST涨停家数（主流资金情绪核心指标）
     non_st_limit_down_count: int = 0  # 非ST跌停家数
     total_amount: float = 0.0  # 两市成交额（亿元）
+    # 成交额历史对比
     prev_total_amount: float = 0.0  # 前一交易日成交额（亿元），0 表示无历史数据
-    # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
+    prev_review_date: str = ""  # 前一交易日日期字符串
+    amount_ratio: float = 0.0  # 今日/前日成交额比值，0 表示无法计算
+    volume_status: str = ""  # 放量 / 缩量 / 平量 / ""（无历史数据）
+    # 涨跌家数判断
+    rise_fall_status: str = ""  # 涨多跌少 / 跌多涨少 / 涨跌持平
+    # 综合市场环境判断
+    market_condition: str = ""  # 综合判断文字
+    can_buy: bool = False  # True=市场环境偏好，可以考虑买入
 
-    # 板块涨幅榜
-    top_sectors: List[Dict] = field(default_factory=list)  # 行业涨幅前5板块
-    bottom_sectors: List[Dict] = field(default_factory=list)  # 行业跌幅前5板块
-    # 概念板块涨跌榜
-    top_concept_sectors: List[Dict] = field(default_factory=list)  # 概念涨幅前10板块
-    bottom_concept_sectors: List[Dict] = field(default_factory=list)  # 概念跌幅前10板块
-    # 近 N 日领涨/领跌统计（由 MarketAnalyzer 计算填充）
-    sector_trend: List[Dict] = field(default_factory=list)
-    # 按涨停/跌停家数排名的板块榜（前10，仅 A 股）
-    sector_up_limit_ranking: List[Dict] = field(default_factory=list)  # 涨停数量 Top10
-    sector_down_limit_ranking: List[Dict] = field(default_factory=list)  # 跌停数量 Top10
+    # 行业板块涨幅榜（展示用 top 5，全量用于存储）
+    top_sectors: List[Dict] = field(default_factory=list)  # 行业涨幅前5（展示/摘要）
+    bottom_sectors: List[Dict] = field(default_factory=list)  # 行业跌幅前5（展示/摘要）
+    all_top_sectors: List[Dict] = field(default_factory=list)  # 全量领涨板块（用于历史存储）
+    all_bottom_sectors: List[Dict] = field(default_factory=list)  # 全量领跌板块（用于历史存储）
+
+    # 板块涨停/跌停数量排行（热点解读核心数据）
+    top_sectors_by_limit_up: List[Dict] = field(default_factory=list)  # 涨停数量 Top10
+    top_sectors_by_limit_down: List[Dict] = field(default_factory=list)  # 跌停数量 Top10
+
+    # 概念板块排行（热点解读补充维度）
+    top_concept_sectors: List[Dict] = field(default_factory=list)  # 概念领涨 TOP10
+    bottom_concept_sectors: List[Dict] = field(default_factory=list)  # 概念领跌 TOP10
+    top_concept_by_limit_up: List[Dict] = field(default_factory=list)  # 概念按涨停数量 TOP10
 
 
 class MarketAnalyzer:
@@ -134,32 +170,25 @@ class MarketAnalyzer:
         today = datetime.now().strftime("%Y-%m-%d")
         overview = MarketOverview(date=today)
 
-        # 1. 获取主要指数行情（按 region 切换 A 股/美股）
+        # 1. 获取主要指数行情（按 region 切换 A 股/美股/港股）
         overview.indices = self._get_main_indices()
 
-        # 2. 获取涨跌统计（A 股有，美股无等效数据）
+        # 2. 获取港股主要指数作为 A 股复盘辅助参考（仅 cn 区域）
+        if self.region == "cn":
+            overview.hk_indices = self._get_hk_indices()
+
+        # 3. 获取涨跌统计（A 股有，美股/港股无等效数据）
         if self.profile.has_market_stats:
             self._get_market_statistics(overview)
 
-        # 3. 获取板块涨跌榜（A 股有，美股暂无）
+        # 4. 获取板块涨跌榜（含行业和概念，以及涨停/跌停排行；A 股独有）
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
-
-        # 4. 获取概念板块涨跌榜（A 股独有）
-        if self.profile.has_sector_rankings:
-            self._get_concept_sector_rankings(overview)
-
-        # 5. 获取板块涨停/跌停家数排行（A 股独有）
-        if self.profile.has_sector_rankings:
-            self._get_sector_limit_rankings(overview)
-
-        # 5. 获取北向资金（可选）
-        # self._get_north_flow(overview)
 
         return overview
 
     def _get_main_indices(self) -> List[MarketIndex]:
-        """获取主要指数实时行情"""
+        """获取主要指数实时行情（不含港股参考，港股通过 _get_hk_indices 单独获取）"""
         indices = []
 
         try:
@@ -186,11 +215,6 @@ class MarketAnalyzer:
                     )
                     indices.append(index)
 
-            # A 股复盘额外补充港股恒生指数、恒生科技指数供参考
-            if self.region == "cn":
-                hk_ref = self._get_hk_reference_indices()
-                indices.extend(hk_ref)
-
             if not indices:
                 logger.warning("[大盘] 所有行情数据源失败，将依赖新闻搜索进行分析")
             else:
@@ -201,42 +225,43 @@ class MarketAnalyzer:
 
         return indices
 
-    def _get_hk_reference_indices(self) -> List["MarketIndex"]:
-        """获取港股参考指数（恒生指数、恒生科技指数）供 A 股复盘参考。"""
+    def _get_hk_indices(self) -> List[MarketIndex]:
+        """获取港股主要指数行情（恒生指数、恒生科技指数），作为 A 股复盘辅助参考。"""
         _HK_INCLUDE = frozenset({"HSI", "HSTECH"})
+        indices = []
         try:
-            hk_data = self.data_manager.get_main_indices(region="hk")
-            if not hk_data:
-                return []
-            result = []
-            for item in hk_data:
-                if item.get("code") not in _HK_INCLUDE:
-                    continue
-                result.append(
-                    MarketIndex(
-                        code=item["code"],
-                        name=item["name"],
-                        current=item["current"],
-                        change=item["change"],
-                        change_pct=item["change_pct"],
-                        open=item.get("open", 0.0),
-                        high=item.get("high", 0.0),
-                        low=item.get("low", 0.0),
-                        prev_close=item.get("prev_close", 0.0),
-                        volume=item.get("volume", 0.0),
-                        amount=item.get("amount", 0.0),
-                        amplitude=item.get("amplitude", 0.0),
+            logger.info("[大盘] 获取港股主要指数行情（辅助A股复盘）...")
+            data_list = self.data_manager.get_main_indices(region="hk")
+            if data_list:
+                for item in data_list:
+                    if item.get("code") not in _HK_INCLUDE:
+                        continue
+                    indices.append(
+                        MarketIndex(
+                            code=item["code"],
+                            name=item["name"],
+                            current=item["current"],
+                            change=item["change"],
+                            change_pct=item["change_pct"],
+                            open=item.get("open", 0.0),
+                            high=item.get("high", 0.0),
+                            low=item.get("low", 0.0),
+                            prev_close=item.get("prev_close", 0.0),
+                            volume=item.get("volume", 0.0),
+                            amount=item.get("amount", 0.0),
+                            amplitude=item.get("amplitude", 0.0),
+                        )
                     )
-                )
-            if result:
-                logger.info("[大盘] 已补充港股参考指数: %s", [i.name for i in result])
-            return result
+            if indices:
+                logger.info(f"[大盘] 获取到 {len(indices)} 个港股参考指数: {[i.name for i in indices]}")
+            else:
+                logger.info("[大盘] 港股参考指数暂不可用（不影响A股复盘）")
         except Exception as e:
-            logger.warning("[大盘] 获取港股参考指数失败，跳过: %s", e)
-            return []
+            logger.warning(f"[大盘] 获取港股参考指数失败（非致命）: {e}")
+        return indices
 
     def _get_market_statistics(self, overview: MarketOverview):
-        """获取市场涨跌统计"""
+        """获取市场涨跌统计，并计算成交额对比、涨跌家数判断和综合市场环境。"""
         try:
             logger.info("[大盘] 获取市场涨跌统计...")
 
@@ -259,8 +284,17 @@ class MarketAnalyzer:
                     f"成交额:{overview.total_amount:.0f}亿"
                 )
 
-                # 持久化当日统计，并读取前一交易日数据用于成交额对比
+                # 保存当日统计 & 读取前日成交额
                 self._save_and_load_market_daily_stats(overview)
+
+                # 计算成交额对比（放量/缩量/平量）
+                self._compute_volume_comparison(overview)
+
+                # 计算涨跌家数判断
+                self._compute_rise_fall_status(overview)
+
+                # 综合市场环境判断
+                self._compute_market_condition(overview)
 
         except Exception as e:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
@@ -288,40 +322,105 @@ class MarketAnalyzer:
             prev = db.get_prev_market_daily_stats(region=self.region, before_date=today)
             if prev:
                 overview.prev_total_amount = prev["total_amount"]
+                overview.prev_review_date = str(prev.get("trade_date", ""))
                 logger.info(
                     "[大盘] 前一交易日(%s)成交额: %.0f亿，今日: %.0f亿",
-                    prev["trade_date"],
-                    prev["total_amount"],
+                    overview.prev_review_date,
+                    overview.prev_total_amount,
                     overview.total_amount,
                 )
         except Exception as exc:
             logger.warning("[大盘] 市场统计历史对比失败: %s", exc)
 
-    def _get_sector_rankings(self, overview: MarketOverview):
-        """获取板块涨跌榜"""
-        try:
-            logger.info("[大盘] 获取板块涨跌榜...")
+    def _compute_volume_comparison(self, overview: MarketOverview) -> None:
+        """根据前日成交额计算成交额比值和放量/缩量状态。"""
+        if overview.total_amount <= 0 or overview.prev_total_amount <= 0:
+            return
+        overview.amount_ratio = overview.total_amount / overview.prev_total_amount
+        if overview.amount_ratio >= 1.1:
+            overview.volume_status = "放量"
+        elif overview.amount_ratio <= 0.9:
+            overview.volume_status = "缩量"
+        else:
+            overview.volume_status = "平量"
+        logger.info(
+            "[大盘] 成交额比较: 今日=%.0f亿 前日(%s)=%.0f亿 比值=%.2f → %s",
+            overview.total_amount,
+            overview.prev_review_date,
+            overview.prev_total_amount,
+            overview.amount_ratio,
+            overview.volume_status,
+        )
 
-            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
+    def _compute_rise_fall_status(self, overview: MarketOverview) -> None:
+        """根据涨跌家数计算涨多跌少 / 跌多涨少 / 涨跌持平。"""
+        if overview.up_count == 0 and overview.down_count == 0:
+            overview.rise_fall_status = ""
+            return
+        if overview.up_count > overview.down_count:
+            overview.rise_fall_status = "涨多跌少"
+        elif overview.up_count < overview.down_count:
+            overview.rise_fall_status = "跌多涨少"
+        else:
+            overview.rise_fall_status = "涨跌持平"
 
-            if top_sectors or bottom_sectors:
-                overview.top_sectors = top_sectors
-                overview.bottom_sectors = bottom_sectors
+    def _compute_market_condition(self, overview: MarketOverview) -> None:
+        """
+        根据量能状态和涨跌家数，综合判断市场环境并设置 can_buy 标志。
 
-                logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
-                logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+        判断矩阵（与 demo-agent 一致）：
+          放量 + 涨多跌少 → 市场偏强，可关注买入机会  ✅
+          放量 + 跌多涨少 → 放量下跌，市场偏弱         ❌
+          放量 + 涨跌持平 → 放量震荡，方向不明，谨慎   ⚠️
+          缩量 + 涨多跌少 → 缩量上涨，注意分歧，谨慎追高 ⚠️
+          缩量 + 跌多涨少 → 缩量下跌，市场偏弱         ❌
+          缩量 + 涨跌持平 → 缩量盘整，观望             ⚠️
+          平量 + 涨多跌少 → 稳量上涨，可适当关注       ⚠️✅
+          平量 + 跌多涨少 → 稳量下跌，谨慎             ⚠️
+          平量 + 涨跌持平 → 量价平稳，观望为主         ⚠️
+          无历史数据     → 简单按涨跌家数判断
+        """
+        vol = overview.volume_status
+        rf = overview.rise_fall_status
 
-                # 保存当日快照到 DB，并计算近 N 日领涨/领跌统计
-                self._save_and_calc_sector_trend(overview)
+        if not vol:
+            # 无历史数据，仅按涨跌家数做简单判断
+            if rf == "涨多跌少":
+                overview.market_condition = "个股涨多跌少，市场偏积极，可适当关注买入机会"
+                overview.can_buy = True
+            elif rf == "跌多涨少":
+                overview.market_condition = "个股跌多涨少，市场偏弱，建议观望"
+                overview.can_buy = False
+            else:
+                overview.market_condition = "市场整体平衡，建议观望"
+                overview.can_buy = False
+            return
 
-        except Exception as e:
-            logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
+        condition_map = {
+            ("放量", "涨多跌少"): ("放量上涨，个股涨多跌少，市场偏强，可关注买入机会", True),
+            ("放量", "跌多涨少"): ("放量下跌，个股跌多涨少，市场偏弱，不建议买入", False),
+            ("放量", "涨跌持平"): ("放量震荡，方向不明，谨慎操作", False),
+            ("缩量", "涨多跌少"): ("缩量上涨，注意分歧，谨慎追高", False),
+            ("缩量", "跌多涨少"): ("缩量下跌，市场偏弱，不建议买入", False),
+            ("缩量", "涨跌持平"): ("缩量盘整，持观望态度", False),
+            ("平量", "涨多跌少"): ("稳量上涨，个股涨多跌少，市场尚可，可适当关注买入机会", True),
+            ("平量", "跌多涨少"): ("稳量下跌，个股跌多涨少，谨慎操作", False),
+            ("平量", "涨跌持平"): ("量价平稳，市场分歧，观望为主", False),
+        }
 
-    # def _get_north_flow(self, overview: MarketOverview):
-    #     """获取北向资金流入"""
-    #     ...
+        key = (vol, rf) if rf else (vol, "涨跌持平")
+        result = condition_map.get(key)
+        if result:
+            overview.market_condition = result[0]
+            overview.can_buy = result[1]
+        else:
+            overview.market_condition = f"{vol}，市场整体平衡，建议观望"
+            overview.can_buy = False
 
-    # 统计性虚拟板块：这些并非真实投资主题，需从概念涨跌榜中过滤掉
+        buy_label = "✅ 可以考虑买入" if overview.can_buy else "❌ 建议观望/不买入"
+        logger.info("[大盘] 市场环境: %s → %s", overview.market_condition, buy_label)
+
+    # 统计性虚拟板块：并非真实投资主题，从概念涨跌榜中过滤
     _CONCEPT_EXCLUDE = frozenset(
         {
             "昨日连板",
@@ -337,132 +436,107 @@ class MarketAnalyzer:
         }
     )
 
-    def _get_concept_sector_rankings(self, overview: MarketOverview) -> None:
-        """获取概念板块涨跌榜（A 股独有）"""
+    def _get_sector_rankings(self, overview: MarketOverview) -> None:
+        """
+        获取行业板块涨跌榜、概念板块涨跌榜，以及涨停/跌停数量排行。
+
+        一次性获取全量行业板块数据，从中计算：
+        - top_sectors / bottom_sectors（展示用 Top5）
+        - all_top_sectors / all_bottom_sectors（全量，用于历史存储）
+        - top_sectors_by_limit_up / top_sectors_by_limit_down（按涨停/跌停数量 Top10）
+        同时获取概念板块及其涨停排行。
+        """
+        # ---- 行业板块 ----
+        try:
+            logger.info("[大盘] 获取行业板块涨跌榜（全量）...")
+            all_top, all_bottom = self.data_manager.get_sector_rankings(1000)
+
+            if all_top or all_bottom:
+                overview.all_top_sectors = all_top or []
+                overview.all_bottom_sectors = all_bottom or []
+                overview.top_sectors = (all_top or [])[:5]
+                overview.bottom_sectors = (all_bottom or [])[:5]
+
+                logger.info(
+                    "[大盘] 领涨板块(展示): %s，全量 %d 个",
+                    [s["name"] for s in overview.top_sectors],
+                    len(overview.all_top_sectors),
+                )
+                logger.info(
+                    "[大盘] 领跌板块(展示): %s，全量 %d 个",
+                    [s["name"] for s in overview.bottom_sectors],
+                    len(overview.all_bottom_sectors),
+                )
+
+                # 从全量板块列表计算涨停/跌停数量排行
+                all_sectors = all_top or []
+                has_limit_data = any(
+                    s.get("limit_up_count", 0) > 0 or s.get("limit_down_count", 0) > 0 for s in all_sectors
+                )
+                if has_limit_data:
+                    overview.top_sectors_by_limit_up = sorted(
+                        [s for s in all_sectors if s.get("limit_up_count", 0) > 0],
+                        key=lambda x: (-x.get("limit_up_count", 0), -x.get("change_pct", 0)),
+                    )[:10]
+                    overview.top_sectors_by_limit_down = sorted(
+                        [s for s in all_sectors if s.get("limit_down_count", 0) > 0],
+                        key=lambda x: (-x.get("limit_down_count", 0), x.get("change_pct", 0)),
+                    )[:10]
+                    logger.info(
+                        "[大盘] 涨停板块Top10: %s",
+                        [(s["name"], s.get("limit_up_count", 0)) for s in overview.top_sectors_by_limit_up],
+                    )
+                    logger.info(
+                        "[大盘] 跌停板块Top10: %s",
+                        [(s["name"], s.get("limit_down_count", 0)) for s in overview.top_sectors_by_limit_down],
+                    )
+                else:
+                    logger.info("[大盘] 涨停/跌停数量字段不可用，跳过按涨跌停排名")
+
+                # 保存当日全量板块快照到 DB
+                self._save_sector_snapshot(overview)
+
+        except Exception as e:
+            logger.error("[大盘] 获取行业板块涨跌榜失败: %s", e)
+
+        # ---- 概念板块 ----
         try:
             logger.info("[大盘] 获取概念板块涨跌榜...")
-            top_concept, bottom_concept = self.data_manager.get_concept_sector_rankings(10)
-            if top_concept or bottom_concept:
-                # 过滤掉统计性虚拟板块（昨日连板、东方财富热股、昨日首板等）
-                top_concept = [s for s in top_concept if s.get("name") not in self._CONCEPT_EXCLUDE]
-                bottom_concept = [s for s in bottom_concept if s.get("name") not in self._CONCEPT_EXCLUDE]
-                overview.top_concept_sectors = top_concept
-                overview.bottom_concept_sectors = bottom_concept
-                logger.info("[大盘] 领涨概念: %s", [s["name"] for s in overview.top_concept_sectors[:5]])
-                logger.info("[大盘] 领跌概念: %s", [s["name"] for s in overview.bottom_concept_sectors[:5]])
+            concept_result = self.data_manager.get_concept_sector_rankings(20)
+            if concept_result:
+                all_top_c, all_bottom_c = concept_result
+                all_top_c = [s for s in (all_top_c or []) if s.get("name") not in self._CONCEPT_EXCLUDE]
+                all_bottom_c = [s for s in (all_bottom_c or []) if s.get("name") not in self._CONCEPT_EXCLUDE]
+                overview.top_concept_sectors = all_top_c[:10]
+                overview.bottom_concept_sectors = all_bottom_c[:10]
+
+                # 概念板块按涨停数量排行
+                has_c_limit = any(s.get("limit_up_count", 0) > 0 for s in all_top_c)
+                if has_c_limit:
+                    overview.top_concept_by_limit_up = sorted(
+                        [s for s in all_top_c if s.get("limit_up_count", 0) > 0],
+                        key=lambda x: (-x.get("limit_up_count", 0), -x.get("change_pct", 0)),
+                    )[:10]
+
+                logger.info("[大盘] 领涨概念TOP10: %s", [s["name"] for s in overview.top_concept_sectors[:5]])
         except Exception as e:
-            logger.error("[大盘] 获取概念板块涨跌榜失败: %s", e)
+            logger.warning("[大盘] 获取概念板块涨跌榜失败（非致命）: %s", e)
 
-    def _get_sector_limit_rankings(self, overview: MarketOverview) -> None:
-        """获取板块涨停/跌停家数排行，并保存到数据库。"""
-        try:
-            logger.info("[大盘] 获取板块涨停/跌停家数排行...")
-            from datetime import date as _date
-            from src.storage import get_db
-
-            today_str = _date.today().strftime("%Y%m%d")
-            all_sectors = self.data_manager.get_sector_limit_stats(trade_date=today_str)
-            if not all_sectors:
-                logger.info("[大盘] 板块涨跌停统计暂无数据（盘中或非交易日），跳过")
-                return
-
-            # 按涨停数量 Top10
-            top_up = sorted(all_sectors, key=lambda x: -x.get("limit_up_count", 0))[:10]
-            top_down = sorted(all_sectors, key=lambda x: -x.get("limit_down_count", 0))[:10]
-            # 过滤掉涨停/跌停数为 0 的
-            overview.sector_up_limit_ranking = [s for s in top_up if s.get("limit_up_count", 0) > 0]
-            overview.sector_down_limit_ranking = [s for s in top_down if s.get("limit_down_count", 0) > 0]
-
-            if overview.sector_up_limit_ranking:
-                logger.info(
-                    "[大盘] 涨停板块 Top%d: %s",
-                    len(overview.sector_up_limit_ranking),
-                    [f"{s['name']}({s['limit_up_count']})" for s in overview.sector_up_limit_ranking[:5]],
-                )
-            if overview.sector_down_limit_ranking:
-                logger.info(
-                    "[大盘] 跌停板块 Top%d: %s",
-                    len(overview.sector_down_limit_ranking),
-                    [f"{s['name']}({s['limit_down_count']})" for s in overview.sector_down_limit_ranking[:5]],
-                )
-
-            # 持久化到数据库
-            try:
-                db = get_db()
-                db.save_sector_limit_stats(
-                    trade_date=_date.today(),
-                    region=self.region,
-                    all_sectors=all_sectors,
-                )
-            except Exception as db_exc:
-                logger.warning("[大盘] 板块涨跌停统计存库失败: %s", db_exc)
-
-        except Exception as e:
-            logger.error("[大盘] 获取板块涨停/跌停家数排行失败: %s", e)
-
-    def _save_and_calc_sector_trend(self, overview: MarketOverview, days: int = 5) -> None:
-        """保存当日板块快照，并将近 N 日领涨/领跌统计写入 overview.sector_trend。"""
+    def _save_sector_snapshot(self, overview: MarketOverview) -> None:
+        """保存当日行业板块快照到数据库（用于多日热点趋势统计）。"""
         try:
             from datetime import date as _date
             from src.storage import get_db
 
             db = get_db()
-            today = _date.today()
             db.save_sector_snapshot(
-                trade_date=today,
+                trade_date=_date.today(),
                 region=self.region,
                 top_sectors=overview.top_sectors,
                 bottom_sectors=overview.bottom_sectors,
             )
-            rows = db.get_recent_sector_snapshots(region=self.region, days=days)
-            overview.sector_trend = self._aggregate_sector_trend(rows, days)
         except Exception as exc:
-            logger.warning("[大盘] 板块趋势计算失败: %s", exc)
-
-    @staticmethod
-    def _aggregate_sector_trend(rows: List[Dict], days: int) -> List[Dict]:
-        """
-        将原始快照行汇总为板块领涨/领跌天数统计。
-
-        Returns:
-            List[Dict]，每项：
-              name, top_days(领涨天数), bottom_days(领跌天数),
-              top_avg_pct(领涨均幅), bottom_avg_pct(领跌均幅)
-        按 top_days desc 排序。
-        """
-        from collections import defaultdict
-
-        summary: Dict[str, Dict] = defaultdict(
-            lambda: {
-                "top_days": 0,
-                "bottom_days": 0,
-                "top_pct_sum": 0.0,
-                "bottom_pct_sum": 0.0,
-            }
-        )
-        for r in rows:
-            name = r["sector_name"]
-            if r["rank_type"] == "top":
-                summary[name]["top_days"] += 1
-                summary[name]["top_pct_sum"] += r["change_pct"]
-            else:
-                summary[name]["bottom_days"] += 1
-                summary[name]["bottom_pct_sum"] += r["change_pct"]
-
-        result = []
-        for name, d in summary.items():
-            result.append(
-                {
-                    "name": name,
-                    "top_days": d["top_days"],
-                    "bottom_days": d["bottom_days"],
-                    "top_avg_pct": (d["top_pct_sum"] / d["top_days"] if d["top_days"] else 0.0),
-                    "bottom_avg_pct": (d["bottom_pct_sum"] / d["bottom_days"] if d["bottom_days"] else 0.0),
-                    "days_window": days,
-                }
-            )
-        result.sort(key=lambda x: (-x["top_days"], -x["top_avg_pct"]))
-        return result
+            logger.warning("[大盘] 板块快照存库失败（非致命）: %s", exc)
 
     def search_market_news(self) -> List[Dict]:
         """
@@ -500,6 +574,71 @@ class MarketAnalyzer:
 
         return all_news
 
+    def _fetch_hotspot_stats(self, days: int = 5) -> dict:
+        """
+        从数据库获取多日板块热点趋势统计（非致命）。
+
+        Args:
+            days: 分析窗口（交易日数）
+
+        Returns:
+            热点统计 dict，失败时返回空 dict
+        """
+        try:
+            from src.repositories.market_review_repo import MarketReviewRepository
+
+            repo = MarketReviewRepository()
+            stats = repo.get_sector_hotspot_stats(days=days, region=self.region)
+            if stats.get("days_analyzed", 0) > 0:
+                logger.info(
+                    "[大盘] 热点趋势: 分析近 %d 个交易日，领涨板块 %d 个，领跌板块 %d 个",
+                    stats["days_analyzed"],
+                    len(stats["top_sectors"]),
+                    len(stats["bottom_sectors"]),
+                )
+            return stats
+        except Exception as e:
+            logger.warning("[大盘] 获取热点趋势统计失败（非致命）: %s", e)
+            return {}
+
+    def _build_hotspot_trend_block(self, hotspot_stats: dict, days: int = 5) -> str:
+        """
+        构建多日板块热点趋势注入块。
+
+        Args:
+            hotspot_stats: _fetch_hotspot_stats() 的返回值
+            days: 显示用的窗口天数
+
+        Returns:
+            Markdown 块字符串，无数据时返回空字符串
+        """
+        if not hotspot_stats or hotspot_stats.get("days_analyzed", 0) == 0:
+            return ""
+
+        analyzed = hotspot_stats["days_analyzed"]
+        dates = hotspot_stats.get("dates", [])
+        top_sectors = hotspot_stats.get("top_sectors", [])
+        bottom_sectors = hotspot_stats.get("bottom_sectors", [])
+
+        if not top_sectors and not bottom_sectors:
+            return ""
+
+        date_range = ""
+        if dates:
+            date_range = f"（{dates[-1]} ~ {dates[0]}）"
+
+        lines = [f"> 📊 近{analyzed}日热点追踪{date_range}"]
+
+        if top_sectors:
+            parts = [f"**{s['name']}**({s['days']}天)" for s in top_sectors[:5]]
+            lines.append(f"> 🏆 领涨频次: {' | '.join(parts)}")
+
+        if bottom_sectors:
+            parts = [f"**{s['name']}**({s['days']}天)" for s in bottom_sectors[:5]]
+            lines.append(f"> 📉 领跌频次: {' | '.join(parts)}")
+
+        return "\n".join(lines)
+
     def generate_market_review(self, overview: MarketOverview, news: List) -> str:
         """
         使用大模型生成大盘复盘报告
@@ -511,303 +650,271 @@ class MarketAnalyzer:
         Returns:
             大盘复盘报告文本
         """
+        # 预取多日热点趋势（非致命，失败返回空 dict）
+        hotspot_stats = self._fetch_hotspot_stats(days=5)
+
         if not self.analyzer or not self.analyzer.is_available():
             logger.warning("[大盘] AI分析器未配置或不可用，使用模板生成报告")
-            return self._generate_template_review(overview, news)
+            return self._generate_template_review(overview, news, hotspot_stats=hotspot_stats)
 
-        # 构建 Prompt
-        prompt = self._build_review_prompt(overview, news)
+        # 构建 Prompt（从外部模板文件加载）
+        prompt = self._build_review_prompt(overview, news, hotspot_stats=hotspot_stats)
 
-        logger.info("[大盘] 调用大模型生成复盘报告...")
-        # Use the public generate_text() entry point — never access private analyzer attributes.
-        review = self.analyzer.generate_text(prompt, max_tokens=2048, temperature=0.7)
+        try:
+            logger.info("[大盘] 调用大模型生成复盘报告...")
+            review = self.analyzer.generate_text(prompt, max_tokens=2048, temperature=0.7)
+            review = review.strip() if review else None
 
-        if review:
-            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
-            # Inject structured data tables into LLM prose sections
-            return self._inject_data_into_review(review, overview)
-        else:
-            logger.warning("[大盘] 大模型返回为空，使用模板报告")
-            return self._generate_template_review(overview, news)
+            if review:
+                logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
+                return self._inject_data_into_review(review, overview, hotspot_stats=hotspot_stats)
+            else:
+                logger.warning("[大盘] 大模型返回为空，使用模板报告")
+                return self._generate_template_review(overview, news, hotspot_stats=hotspot_stats)
+        except Exception as e:
+            logger.error("[大盘] 大模型生成复盘报告失败: %s", e)
+            return self._generate_template_review(overview, news, hotspot_stats=hotspot_stats)
 
-    def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
-        """Inject structured data tables into the corresponding LLM prose sections."""
-        import re
-
-        # Build data blocks
+    def _inject_data_into_review(
+        self,
+        review: str,
+        overview: MarketOverview,
+        hotspot_stats: Optional[Dict] = None,
+    ) -> str:
+        """将结构化数据表格注入 LLM 生成的各章节。"""
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
-        sector_block = self._build_sector_block(overview)
+        sector_block = self._build_sector_block(overview, hotspot_stats=hotspot_stats)
 
-        # Inject market stats after "### 一、市场总结" section (before next ###)
         if stats_block:
-            review = self._insert_after_section(review, r"###\s*一、市场总结", stats_block)
-
-        # Inject indices table after "### 二、指数点评" section
+            review = self._insert_after_section(review, r"###\s*[一1]、?市场总结", stats_block)
         if indices_block:
-            review = self._insert_after_section(review, r"###\s*二、指数点评", indices_block)
-
-        # Inject sector rankings after "### 四、热点解读" section
+            review = self._insert_after_section(review, r"###\s*[二2]、?指数点评", indices_block)
         if sector_block:
-            review = self._insert_after_section(review, r"###\s*四、热点解读", sector_block)
+            review = self._insert_after_section(review, r"###\s*[四4]、?热点解读", sector_block)
 
         return review
 
     @staticmethod
     def _insert_after_section(text: str, heading_pattern: str, block: str) -> str:
-        """Insert a data block at the end of a markdown section (before the next ### heading)."""
+        """在指定 Markdown 小节末尾（下一个 ### 标题之前）插入数据块。"""
         import re
 
-        # Find the heading
         match = re.search(heading_pattern, text)
         if not match:
             return text
         start = match.end()
-        # Find the next ### heading after this one
         next_heading = re.search(r"\n###\s", text[start:])
         if next_heading:
             insert_pos = start + next_heading.start()
         else:
-            # No next heading — append at end
             insert_pos = len(text)
-        # Insert the block before the next heading, with spacing
         return text[:insert_pos].rstrip() + "\n\n" + block + "\n\n" + text[insert_pos:].lstrip("\n")
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
-        """Build market statistics block."""
+        """构建市场统计摘要块（成交额、涨跌家数、涨停、量能状态、市场环境判断、港股参考）。"""
         has_stats = overview.up_count or overview.down_count or overview.total_amount
         if not has_stats:
             return ""
 
-        # 成交额对比
-        if overview.prev_total_amount > 0 and overview.total_amount > 0:
-            diff_pct = (overview.total_amount - overview.prev_total_amount) / overview.prev_total_amount * 100
-            if diff_pct >= 10:
-                vol_tag = f"🔺 较前日**+{diff_pct:.1f}%** 放量"
-            elif diff_pct >= 3:
-                vol_tag = f"🔼 较前日**+{diff_pct:.1f}%** 温和放量"
-            elif diff_pct > -3:
-                vol_tag = f"➡️ 较前日**{diff_pct:+.1f}%** 基本持平"
-            elif diff_pct > -10:
-                vol_tag = f"🔽 较前日**{diff_pct:.1f}%** 温和缩量"
-            else:
-                vol_tag = f"🔻 较前日**{diff_pct:.1f}%** 缩量"
-            amount_str = (
-                f"成交额 **{overview.total_amount:.0f}** 亿（昨 {overview.prev_total_amount:.0f} 亿，{vol_tag}）"
-            )
-        else:
-            amount_str = f"成交额 **{overview.total_amount:.0f}** 亿"
+        lines = []
 
-        # 涨多跌少判断
-        total_stocks = overview.up_count + overview.down_count + overview.flat_count
-        if total_stocks > 0:
-            up_ratio = overview.up_count / total_stocks
-            if overview.up_count > overview.down_count * 1.5:
-                breadth_tag = "📈 涨多跌少"
-            elif overview.down_count > overview.up_count * 1.5:
-                breadth_tag = "📉 跌多涨少"
-            else:
-                breadth_tag = "↔️ 涨跌均衡"
-        else:
-            breadth_tag = ""
-
-        lines = [
-            f"> {breadth_tag}  上涨 **{overview.up_count}** 家 / 下跌 **{overview.down_count}** 家 / "
+        # 主行：涨跌家数 + 涨停 + 成交额
+        lines.append(
+            f"> 📈 上涨 **{overview.up_count}** 家 / 下跌 **{overview.down_count}** 家 / "
             f"平盘 **{overview.flat_count}** 家 | "
             f"涨停 **{overview.limit_up_count}**（非ST **{overview.non_st_limit_up_count}**）/ "
             f"跌停 **{overview.limit_down_count}**（非ST **{overview.non_st_limit_down_count}**）| "
-            f"{amount_str}"
-        ]
+            f"成交额 **{overview.total_amount:.0f}** 亿"
+        )
+
+        # 成交额对比行（有历史数据时）
+        if overview.volume_status and overview.prev_total_amount > 0:
+            pct_change = (overview.amount_ratio - 1) * 100
+            sign = "+" if pct_change >= 0 else ""
+            vol_emoji = {"放量": "🔥", "缩量": "📉", "平量": "📊"}.get(overview.volume_status, "📊")
+            lines.append(
+                f"> {vol_emoji} 较前日({overview.prev_review_date})成交额 "
+                f"**{overview.prev_total_amount:.0f}** 亿，"
+                f"变化 **{sign}{pct_change:.1f}%**，属于**{overview.volume_status}**"
+            )
+
+        # 涨跌家数判断行
+        if overview.rise_fall_status:
+            rf_emoji = (
+                "🟢"
+                if overview.rise_fall_status == "涨多跌少"
+                else ("🔴" if overview.rise_fall_status == "跌多涨少" else "⚪")
+            )
+            lines.append(f"> {rf_emoji} 个股表现：**{overview.rise_fall_status}**")
+
+        # 综合市场环境判断行
+        if overview.market_condition:
+            buy_tag = "✅ **可以考虑买入**" if overview.can_buy else "❌ **建议观望/不买入**"
+            lines.append(f"> 🏦 市场环境：{overview.market_condition} → {buy_tag}")
+
+        # 港股参考（仅 A 股区域）
+        if overview.hk_indices:
+            lines.append("")
+            lines.append("> 🇭🇰 **港股外围参考**")
+            for idx in overview.hk_indices:
+                arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+                lines.append(f"> {arrow} {idx.name}: **{idx.current:.2f}** ({idx.change_pct:+.2f}%)")
+
         return "\n".join(lines)
 
     def _build_indices_block(self, overview: MarketOverview) -> str:
-        """构建指数行情表格（不含振幅）"""
-        if not overview.indices:
+        """构建指数行情表格（不含振幅），港股附加为辅助参考块。"""
+        if not overview.indices and not overview.hk_indices:
             return ""
-        lines = ["| 指数 | 最新 | 涨跌幅 | 成交额(亿) |", "|------|------|--------|-----------|"]
-        for idx in overview.indices:
-            arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
-            amount_raw = idx.amount or 0.0
-            if amount_raw == 0.0:
-                # Yahoo Finance 不提供成交额，显示 N/A 避免误解
-                amount_str = "N/A"
-            elif amount_raw > 1e6:
-                amount_str = f"{amount_raw / 1e8:.0f}"
-            else:
-                amount_str = f"{amount_raw:.0f}"
-            lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {amount_str} |")
+        lines = []
+        if overview.indices:
+            lines += ["| 指数 | 最新 | 涨跌幅 | 成交额(亿) |", "|------|------|--------|-----------|"]
+            for idx in overview.indices:
+                arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+                amount_raw = idx.amount or 0.0
+                if amount_raw == 0.0:
+                    amount_str = "N/A"
+                elif amount_raw > 1e6:
+                    amount_str = f"{amount_raw / 1e8:.0f}"
+                else:
+                    amount_str = f"{amount_raw:.0f}"
+                lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {amount_str} |")
+        if overview.hk_indices:
+            if lines:
+                lines.append("")
+            lines.append("> 🇭🇰 **港股参考（辅助A股复盘）**")
+            for idx in overview.hk_indices:
+                arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+                lines.append(f"> {arrow} {idx.name}: **{idx.current:.2f}** ({idx.change_pct:+.2f}%)")
         return "\n".join(lines)
 
-    def _build_sector_block(self, overview: MarketOverview) -> str:
-        """Build sector ranking block, including limit stats and multi-day trend statistics."""
+    def _build_sector_block(
+        self,
+        overview: MarketOverview,
+        hotspot_stats: Optional[Dict] = None,
+    ) -> str:
+        """构建板块排行块（行业涨停榜、概念热点、多日趋势）。"""
         has_data = (
-            overview.top_sectors
-            or overview.bottom_sectors
+            overview.top_sectors_by_limit_up
+            or overview.top_sectors_by_limit_down
             or overview.top_concept_sectors
             or overview.bottom_concept_sectors
-            or overview.sector_up_limit_ranking
-            or overview.sector_down_limit_ranking
+            or overview.top_concept_by_limit_up
         )
         if not has_data:
             return ""
         lines = []
 
-        # 概念板块（近1日热点追踪）
+        # 行业板块 TOP10（按涨停数量）
+        if overview.top_sectors_by_limit_up:
+            lines.append("")
+            lines.append("> 🚀 **行业板块 TOP10（按涨停数量）**")
+            lines.append("> | 排名 | 板块 | 涨停数 | 涨跌幅 |")
+            lines.append("> |------|------|--------|--------|")
+            for rank, s in enumerate(overview.top_sectors_by_limit_up, 1):
+                lines.append(f"> | {rank} | {s['name']} | {s.get('limit_up_count', 0)} | {s['change_pct']:+.2f}% |")
+
+        # 行业板块 TOP10（按跌停数量）
+        if overview.top_sectors_by_limit_down:
+            lines.append("")
+            lines.append("> 🧊 **行业板块 TOP10（按跌停数量）**")
+            lines.append("> | 排名 | 板块 | 跌停数 | 涨跌幅 |")
+            lines.append("> |------|------|--------|--------|")
+            for rank, s in enumerate(overview.top_sectors_by_limit_down, 1):
+                lines.append(f"> | {rank} | {s['name']} | {s.get('limit_down_count', 0)} | {s['change_pct']:+.2f}% |")
+
+        # 近1日热点追踪（概念板块）
         if overview.top_concept_sectors or overview.bottom_concept_sectors:
-            lines.append("**近1日热点追踪**")
-        if overview.top_concept_sectors:
-            top_c = " | ".join([f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]])
-            lines.append(f"> 🚀 概念领涨: {top_c}")
-        if overview.bottom_concept_sectors:
-            bot_c = " | ".join(
-                [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:10]]
-            )
-            lines.append(f"> 🔻 概念领跌: {bot_c}")
-
-        # 涨停/跌停数量榜
-        limit_block = self._build_sector_limit_block(overview)
-        if limit_block:
             lines.append("")
-            lines.append(limit_block)
+            lines.append("> 📊 **近1日热点追踪（概念板块）**")
+            if overview.top_concept_sectors:
+                parts = [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]]
+                lines.append(f"> 🏆 领涨 TOP10: {' | '.join(parts)}")
+            if overview.bottom_concept_sectors:
+                parts = [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:10]]
+                lines.append(f"> 📉 领跌 TOP10: {' | '.join(parts)}")
 
-        # 近 N 日领涨/领跌天数统计
-        trend_block = self._build_sector_trend_block(overview)
-        if trend_block:
+        # 概念板块 TOP10（按涨停数量）
+        if overview.top_concept_by_limit_up:
             lines.append("")
-            lines.append(trend_block)
+            lines.append("> 🌟 **概念板块 TOP10（按涨停数量）**")
+            lines.append("> | 排名 | 概念 | 涨停数 | 涨跌幅 |")
+            lines.append("> |------|------|--------|--------|")
+            for rank, s in enumerate(overview.top_concept_by_limit_up, 1):
+                lines.append(f"> | {rank} | {s['name']} | {s.get('limit_up_count', 0)} | {s['change_pct']:+.2f}% |")
+
+        # 多日热点趋势（来自 DB 历史记录）
+        if hotspot_stats:
+            hotspot_block = self._build_hotspot_trend_block(hotspot_stats)
+            if hotspot_block:
+                lines.append("")
+                lines.append(hotspot_block)
 
         return "\n".join(lines)
 
-    @staticmethod
-    def _build_sector_limit_block(overview: MarketOverview) -> str:
-        """渲染板块涨停/跌停家数排行表。"""
-        if not overview.sector_up_limit_ranking and not overview.sector_down_limit_ranking:
-            return ""
-        lines = ["**今日板块涨停/跌停家数榜**"]
-        if overview.sector_up_limit_ranking:
-            lines.append("")
-            lines.append("| 板块 | 涨停家数 | 板块涨跌幅 |")
-            lines.append("|------|---------|----------|")
-            for s in overview.sector_up_limit_ranking:
-                pct_str = f"{s['change_pct']:+.2f}%" if s.get("change_pct") is not None else "N/A"
-                lines.append(f"| {s['name']} | **{s['limit_up_count']}** | {pct_str} |")
-        if overview.sector_down_limit_ranking:
-            lines.append("")
-            lines.append("| 板块 | 跌停家数 | 板块涨跌幅 |")
-            lines.append("|------|---------|----------|")
-            for s in overview.sector_down_limit_ranking:
-                pct_str = f"{s['change_pct']:+.2f}%" if s.get("change_pct") is not None else "N/A"
-                lines.append(f"| {s['name']} | **{s['limit_down_count']}** | {pct_str} |")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _build_sector_trend_block(overview: MarketOverview) -> str:
-        """渲染近 N 日领涨/领跌板块统计表。"""
-        if not overview.sector_trend:
-            return ""
-        days = overview.sector_trend[0].get("days_window", 5) if overview.sector_trend else 5
-
-        # 领涨榜 top 5
-        top_trend = [r for r in overview.sector_trend if r["top_days"] > 0]
-        top_trend.sort(key=lambda x: (-x["top_days"], -x["top_avg_pct"]))
-
-        # 领跌榜 top 5（按领跌天数降序）
-        bot_trend = [r for r in overview.sector_trend if r["bottom_days"] > 0]
-        bot_trend.sort(key=lambda x: (-x["bottom_days"], x["bottom_avg_pct"]))
-
-        if not top_trend and not bot_trend:
-            return ""
-
-        lines = [f"**近 {days} 日板块领涨/领跌统计**"]
-        if top_trend:
-            lines.append("")
-            lines.append(f"| 板块 | 近{days}日领涨天数 | 平均涨幅 |")
-            lines.append("|------|-------------|---------|")
-            for r in top_trend[:5]:
-                lines.append(f"| {r['name']} | {r['top_days']} 天 | {r['top_avg_pct']:+.2f}% |")
-        if bot_trend:
-            lines.append("")
-            lines.append(f"| 板块 | 近{days}日领跌天数 | 平均跌幅 |")
-            lines.append("|------|-------------|---------|")
-            for r in bot_trend[:5]:
-                lines.append(f"| {r['name']} | {r['bottom_days']} 天 | {r['bottom_avg_pct']:+.2f}% |")
-        return "\n".join(lines)
-
-    @staticmethod
-    @staticmethod
-    def _build_limit_text_for_prompt(overview: MarketOverview) -> str:
-        """将板块涨停/跌停家数排行汇总成 Prompt 可用的简洁纯文本。"""
-        lines = []
-        if overview.sector_up_limit_ranking:
-            parts = [f"{s['name']}({s['limit_up_count']}家涨停)" for s in overview.sector_up_limit_ranking[:10]]
-            lines.append("## 板块涨停家数排行（Top10）")
-            lines.append(" | ".join(parts))
-        if overview.sector_down_limit_ranking:
-            parts = [f"{s['name']}({s['limit_down_count']}家跌停)" for s in overview.sector_down_limit_ranking[:10]]
-            lines.append("## 板块跌停家数排行")
-            lines.append(" | ".join(parts))
-        return "\n".join(lines)
-
-    def _build_trend_text_for_prompt(overview: MarketOverview) -> str:
-        """将 sector_trend 汇总成 Prompt 可用的简洁纯文本。"""
-        if not overview.sector_trend:
-            return ""
-        days = overview.sector_trend[0].get("days_window", 5)
-
-        top_trend = [r for r in overview.sector_trend if r["top_days"] > 0]
-        top_trend.sort(key=lambda x: (-x["top_days"], -x["top_avg_pct"]))
-
-        bot_trend = [r for r in overview.sector_trend if r["bottom_days"] > 0]
-        bot_trend.sort(key=lambda x: (-x["bottom_days"], x["bottom_avg_pct"]))
-
-        if not top_trend and not bot_trend:
-            return ""
-
-        lines = [f"## 近 {days} 日板块领涨/领跌统计"]
-        if top_trend:
-            parts = [f"{r['name']}(领涨{r['top_days']}天,均涨{r['top_avg_pct']:+.2f}%)" for r in top_trend[:5]]
-            lines.append("近期领涨主线: " + " | ".join(parts))
-        if bot_trend:
-            parts = [f"{r['name']}(领跌{r['bottom_days']}天,均跌{r['bottom_avg_pct']:+.2f}%)" for r in bot_trend[:5]]
-            lines.append("近期持续领跌: " + " | ".join(parts))
-        return "\n".join(lines)
-
-    def _build_concept_text_for_prompt(self, overview: MarketOverview) -> str:
-        """将概念板块涨跌榜汇总成 Prompt 可用的简洁纯文本。"""
-        if not overview.top_concept_sectors and not overview.bottom_concept_sectors:
-            return ""
-        lines = ["## 概念板块涨跌榜"]
-        if overview.top_concept_sectors:
-            parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]]
-            lines.append("领涨概念(Top10): " + " | ".join(parts))
-        if overview.bottom_concept_sectors:
-            parts = [f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:10]]
-            lines.append("领跌概念(Top10): " + " | ".join(parts))
-        return "\n".join(lines)
-
-    def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
-        """构建复盘报告 Prompt"""
-        # 指数行情信息（简洁格式，不用emoji）
+    def _build_review_prompt(
+        self,
+        overview: MarketOverview,
+        news: List,
+        hotspot_stats: Optional[Dict] = None,
+    ) -> str:
+        """从外部模板文件加载 Prompt，并将动态数据注入占位符。"""
+        # 指数行情文本（简洁格式）
         indices_text = ""
         for idx in overview.indices:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
             indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
 
-        # 板块信息
-        top_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:3]])
-        bottom_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:3]])
+        # 港股指数文本（仅 A 股区域）
+        hk_indices_text = ""
+        if overview.hk_indices:
+            for idx in overview.hk_indices:
+                direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
+                hk_indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
 
-        # 近 N 日领涨/领跌板块趋势文本
-        trend_text = self._build_trend_text_for_prompt(overview)
-        # 板块涨停/跌停家数排行文本
-        limit_text = self._build_limit_text_for_prompt(overview)
-        # 概念板块涨跌文本
-        concept_text = self._build_concept_text_for_prompt(overview)
+        # 涨停/跌停板块文本
+        def _fmt_limit_rows(sectors: List[Dict], count_key: str, label: str) -> str:
+            if not sectors:
+                return "暂无数据"
+            rows = [
+                f"  {rank}. {s['name']}（{label}{s.get(count_key, 0)}家，涨跌幅{s['change_pct']:+.2f}%）"
+                for rank, s in enumerate(sectors, 1)
+            ]
+            return "\n".join(rows)
 
-        # 新闻信息 - 支持 SearchResult 对象或字典
+        limit_up_text = _fmt_limit_rows(overview.top_sectors_by_limit_up, "limit_up_count", "涨停")
+        limit_down_text = _fmt_limit_rows(overview.top_sectors_by_limit_down, "limit_down_count", "跌停")
+
+        # 概念板块文本
+        concept_up_text = (
+            "\n".join(
+                f"  {rank}. {s['name']}（涨跌幅{s['change_pct']:+.2f}%）"
+                for rank, s in enumerate(overview.top_concept_sectors[:10], 1)
+            )
+            or "暂无数据"
+        )
+        concept_down_text = (
+            "\n".join(
+                f"  {rank}. {s['name']}（涨跌幅{s['change_pct']:+.2f}%）"
+                for rank, s in enumerate(overview.bottom_concept_sectors[:10], 1)
+            )
+            or ""
+        )
+        concept_limit_text = (
+            "\n".join(
+                f"  {rank}. {s['name']}（涨停{s.get('limit_up_count', 0)}家，涨跌幅{s['change_pct']:+.2f}%）"
+                for rank, s in enumerate(overview.top_concept_by_limit_up, 1)
+            )
+            or ""
+        )
+
+        # 多日热点趋势文本
+        hotspot_trend_text = self._build_hotspot_trend_block(hotspot_stats or {}) if hotspot_stats else ""
+
+        # 新闻
         news_text = ""
         for i, n in enumerate(news[:6], 1):
-            # 兼容 SearchResult 对象和字典
             if hasattr(n, "title"):
                 title = n.title[:50] if n.title else ""
                 snippet = n.snippet[:100] if n.snippet else ""
@@ -816,236 +923,168 @@ class MarketAnalyzer:
                 snippet = n.get("snippet", "")[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
 
-        # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
+        # ---- 构建 stats_block 和 sector_block 注入模板 ----
         stats_block = ""
         sector_block = ""
+
         if self.region == "us":
             if self.profile.has_market_stats:
-                stats_block = f"""## Market Overview
-- Up: {overview.up_count} | Down: {overview.down_count} | Flat: {overview.flat_count}
-- Limit up: {overview.limit_up_count} | Limit down: {overview.limit_down_count}
-- Total volume (CNY bn): {overview.total_amount:.0f}"""
+                stats_block = (
+                    f"## Market Overview\n"
+                    f"- Up: {overview.up_count} | Down: {overview.down_count} | Flat: {overview.flat_count}\n"
+                    f"- Non-ST limit up: {overview.non_st_limit_up_count} | "
+                    f"Non-ST limit down: {overview.non_st_limit_down_count}\n"
+                    f"- Total volume (CNY bn): {overview.total_amount:.0f}"
+                )
             else:
                 stats_block = "## Market Overview\n(US market has no equivalent advance/decline stats.)"
 
             if self.profile.has_sector_rankings:
-                sector_block = f"""## Sector Performance
-Leading: {top_sectors_text if top_sectors_text else "N/A"}
-Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}
-{trend_text}"""
+                hotspot_us = f"\nMulti-Day Trend (~5 days):\n{hotspot_trend_text}" if hotspot_trend_text else ""
+                top_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:3]])
+                bot_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:3]])
+                sector_block = (
+                    f"## Sector Performance\n"
+                    f"Leading: {top_text or 'N/A'}\n"
+                    f"Lagging: {bot_text or 'N/A'}"
+                    f"{hotspot_us}"
+                )
             else:
                 sector_block = "## Sector Performance\n(US sector data not available.)"
         else:
+            # A 股 / 港股
             if self.profile.has_market_stats:
-                # 成交额与前日对比
-                if overview.prev_total_amount > 0 and overview.total_amount > 0:
-                    diff_pct = (overview.total_amount - overview.prev_total_amount) / overview.prev_total_amount * 100
-                    amount_desc = (
-                        f"{overview.total_amount:.0f} 亿元"
-                        f"（前一日 {overview.prev_total_amount:.0f} 亿，较前日 {diff_pct:+.1f}%，"
-                        f"{'放量' if diff_pct >= 5 else '缩量' if diff_pct <= -5 else '基本持平'}）"
+                # 成交额与前日对比描述
+                if overview.volume_status and overview.prev_total_amount > 0:
+                    pct = (overview.amount_ratio - 1) * 100
+                    sign = "+" if pct >= 0 else ""
+                    vol_desc = (
+                        f"\n- 与前日({overview.prev_review_date})成交额 {overview.prev_total_amount:.0f} 亿相比，"
+                        f"变化 {sign}{pct:.1f}%，属于**{overview.volume_status}**"
                     )
                 else:
-                    amount_desc = f"{overview.total_amount:.0f} 亿元"
-
-                # 涨跌家数多寡
-                total_stocks = overview.up_count + overview.down_count + overview.flat_count
-                if total_stocks > 0:
-                    breadth_desc = (
-                        f"上涨 {overview.up_count} 家，下跌 {overview.down_count} 家，平盘 {overview.flat_count} 家"
-                        f"（{'涨多跌少' if overview.up_count > overview.down_count else '跌多涨少' if overview.down_count > overview.up_count else '涨跌均衡'}）"
+                    vol_desc = ""
+                rf_desc = f"\n- 个股涨跌表现：{overview.rise_fall_status}" if overview.rise_fall_status else ""
+                cond_desc = ""
+                if overview.market_condition:
+                    buy_label = "✅ 可以考虑买入" if overview.can_buy else "❌ 建议观望/不买入"
+                    cond_desc = f"\n- **市场环境综合判断：{overview.market_condition} → {buy_label}**"
+                # ST涨停行（数据可用时才显示）
+                st_count = overview.limit_up_count - overview.non_st_limit_up_count
+                st_down_count = overview.limit_down_count - overview.non_st_limit_down_count
+                st_line = ""
+                if st_count > 0 or st_down_count > 0:
+                    st_line = (
+                        f"\n- ST类涨停: {st_count} 家 | ST类跌停: {st_down_count} 家"
+                        f"（ST股±5%限制，ST涨停↑情绪参考）"
                     )
-                else:
-                    breadth_desc = f"上涨 {overview.up_count} 家，下跌 {overview.down_count} 家"
-
-                stats_block = f"""## 市场概况
-- {breadth_desc}
-- 涨停: {overview.limit_up_count} 家（其中非ST涨停: {overview.non_st_limit_up_count} 家）| 跌停: {overview.limit_down_count} 家（其中非ST跌停: {overview.non_st_limit_down_count} 家）
-- 两市成交额: {amount_desc}"""
+                stats_block = (
+                    f"## 市场概况\n"
+                    f"- 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家\n"
+                    f"- 非ST涨停: {overview.non_st_limit_up_count} 家 | 非ST跌停: {overview.non_st_limit_down_count} 家"
+                    f"（主板±10%/创业板科创板±20%）{st_line}\n"
+                    f"- 两市成交额: {overview.total_amount:.0f} 亿元"
+                    f"{vol_desc}{rf_desc}{cond_desc}"
+                )
             else:
-                if self.region == "hk":
-                    stats_block = "## 市场概况\n（港股暂无涨跌家数等统计）"
-                else:
-                    stats_block = "## 市场概况\n（美股暂无涨跌家数等统计）"
+                stats_block = (
+                    "## 市场概况\n（港股暂无涨跌家数等统计）"
+                    if self.region == "hk"
+                    else "## 市场概况\n（美股暂无涨跌家数等统计）"
+                )
 
             if self.profile.has_sector_rankings:
-                sector_block = f"""## 行业板块表现
-领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
-领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
-{limit_text}
-{trend_text}
-
-{concept_text}"""
+                concept_block = ""
+                if concept_up_text or concept_down_text:
+                    parts = ["\n## 近1日热点追踪（概念板块）"]
+                    if concept_up_text:
+                        parts.append(f"领涨频次TOP10:\n{concept_up_text}")
+                    if concept_down_text:
+                        parts.append(f"领跌频次TOP10:\n{concept_down_text}")
+                    if concept_limit_text:
+                        parts.append(f"概念板块按涨停数量TOP10:\n{concept_limit_text}")
+                    if hotspot_trend_text:
+                        parts.append(f"单日热门主题追踪（概念板块）:\n{hotspot_trend_text}")
+                    concept_block = "\n".join(parts)
+                limit_up_block = (
+                    f"\n\n## 行业板块TOP10（按涨停数量）\n{limit_up_text}" if overview.top_sectors_by_limit_up else ""
+                )
+                limit_down_block = (
+                    f"\n\n## 行业板块TOP10（按跌停数量）\n{limit_down_text}"
+                    if overview.top_sectors_by_limit_down
+                    else ""
+                )
+                sector_block = f"## 行业板块表现{limit_up_block}{limit_down_block}{concept_block}"
             else:
-                if self.region == "hk":
-                    sector_block = "## 板块表现\n（港股暂无板块行业数据）"
-                else:
-                    sector_block = "## 板块表现\n（美股暂无板块涨跌数据）"
+                sector_block = (
+                    "## 板块表现\n（港股暂无板块行业数据）"
+                    if self.region == "hk"
+                    else "## 板块表现\n（美股暂无板块涨跌数据）"
+                )
 
-        data_no_indices_hint = (
-            "注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。"
+        # 占位符替换
+        indices_placeholder = indices_text or (
+            "No index data (API error)" if self.region == "us" else "暂无指数数据（接口异常）"
+        )
+        hk_placeholder = hk_indices_text or "暂无港股指数数据"
+        news_placeholder = news_text or ("No relevant news" if self.region == "us" else "暂无相关新闻")
+        data_missing_hint = (
+            (
+                "Note: Market data fetch failed. Rely mainly on [Market News] for qualitative analysis. "
+                "Do not invent index levels."
+                if self.region == "us"
+                else "注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。"
+            )
             if not indices_text
             else ""
         )
-        indices_placeholder = (
-            indices_text
-            if indices_text
-            else ("No index data (API error)" if self.region == "us" else "暂无指数数据（接口异常）")
+
+        # 加载外部模板并替换占位符
+        try:
+            template = _load_review_prompt_template(self.region)
+        except FileNotFoundError as e:
+            logger.warning("[大盘] Prompt 模板文件缺失，回退到内联 Prompt: %s", e)
+            template = self._build_fallback_prompt(overview)
+            return template
+
+        result = (
+            template.replace("{date}", overview.date)
+            .replace("{indices}", indices_placeholder)
+            .replace("{stats_block}", stats_block)
+            .replace("{sector_block}", sector_block)
+            .replace("{news}", news_placeholder)
+            .replace("{data_missing_hint}", data_missing_hint)
         )
-        news_placeholder = news_text if news_text else ("No relevant news" if self.region == "us" else "暂无相关新闻")
-
-        # 美股场景使用英文提示语，便于生成更符合美股语境的报告
-        if self.region == "us":
-            data_no_indices_hint_en = (
-                "Note: Market data fetch failed. Rely mainly on [Market News] for qualitative analysis. Do not invent index levels."
-                if not indices_text
-                else ""
+        # A/H 区域额外占位符
+        if self.region != "us":
+            result = (
+                result.replace("{hk_indices}", hk_placeholder)
+                .replace("{volume_status}", overview.volume_status or "成交量情况")
+                .replace("{rise_fall_status}", overview.rise_fall_status or "涨跌情况")
+                .replace("{index_hint}", self.profile.prompt_index_hint)
             )
-            return f"""You are a professional US/A/H market analyst. Please produce a concise US market recap report based on the data below.
+        # 策略模块（如模板包含 {strategy_block}）
+        result = result.replace("{strategy_block}", self.strategy.to_prompt_block())
+        return result
 
-[Requirements]
-- Output pure Markdown only
-- No JSON
-- No code blocks
-- Use emoji sparingly in headings (at most one per heading)
+    def _build_fallback_prompt(self, overview: MarketOverview) -> str:
+        """Prompt 模板文件缺失时的兜底内联 Prompt（简版）。"""
+        market_label = {"cn": "A股", "hk": "港股", "us": "美股"}.get(self.region, "大盘")
+        return (
+            f"你是专业市场分析师，请根据以下数据生成{market_label}大盘复盘报告（纯Markdown格式）：\n\n"
+            f"日期：{overview.date}\n"
+            f"主要指数：{', '.join(f'{i.name}{i.change_pct:+.2f}%' for i in overview.indices)}\n"
+            f"请输出包含市场总结、指数点评、资金动向、热点解读、后市展望、风险提示的完整复盘报告。"
+        )
 
----
-
-# Today's Market Data
-
-## Date
-{overview.date}
-
-## Major Indices
-{indices_placeholder}
-
-{stats_block}
-
-{sector_block}
-
-## Market News
-{news_placeholder}
-
-{data_no_indices_hint_en}
-
-{self.strategy.to_prompt_block()}
-
----
-
-# Output Template (follow this structure)
-
-## {overview.date} US Market Recap
-
-### 1. Market Summary
-(2-3 sentences on overall market performance, index moves, volume)
-
-### 2. Index Commentary
-(Analyse S&P 500, Nasdaq, Dow and other major index moves.)
-
-### 3. Fund Flows
-(Interpret volume and flow implications)
-
-### 4. Sector/Theme Highlights
-(Analyze drivers behind leading/lagging sectors)
-
-### 5. Outlook
-(Short-term view based on price action and news)
-
-### 6. Risk Alerts
-(Key risks to watch)
-
-### 7. Strategy Plan
-(Provide risk-on/neutral/risk-off stance, position sizing guideline, and one invalidation trigger.)
-
----
-
-Output the report content directly, no extra commentary.
-"""
-
-        # A 股 / 港股场景使用中文提示语（相同的七段式结构）
-        market_label = "A股" if self.region == "cn" else "港股"
-        if self.region == "cn":
-            sentiment_hint = (
-                f"全市场涨多跌少还是跌多涨少？"
-                f"非ST涨停 {overview.non_st_limit_up_count} 家（含ST总计 {overview.limit_up_count} 家）/ "
-                f"非ST跌停 {overview.non_st_limit_down_count} 家（含ST总计 {overview.limit_down_count} 家），"
-                f"是否反映情绪过热或恐慌？"
-            )
-        else:
-            sentiment_hint = "港股成交量是否放大？南北向资金净流向如何？"
-        return f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的{market_label}大盘复盘报告。
-
-【重要】输出要求：
-- 必须输出纯 Markdown 文本格式
-- 禁止输出 JSON 格式
-- 禁止输出代码块
-- emoji 仅在标题处少量使用（每个标题最多1个）
-
----
-
-# 今日市场数据
-
-## 日期
-{overview.date}
-
-## 主要指数
-{indices_placeholder}
-
-{stats_block}
-
-{sector_block}
-
-## 市场新闻
-{news_placeholder}
-
-{data_no_indices_hint}
-
-{self.strategy.to_prompt_block()}
-
----
-
-# 输出格式模板（请严格按此格式输出）
-
-## {overview.date} {market_label}大盘复盘
-
-### 一、市场总结
-（2-3句话概括今日市场整体表现，包括指数涨跌、成交量变化）
-
-**市场环境研判（必填）：**
-根据以下维度作出明确结论：
-1. 量能：今日成交额与前日对比，是放量、缩量还是持平？
-2. 人气：{sentiment_hint}
-3. 综合判断：当前市场环境 **适合积极做多 / 谨慎操作 / 观望为主**，并给出一句理由。
-
-### 二、指数点评
-（{self.profile.prompt_index_hint}）
-
-### 三、资金动向
-（解读成交额流向的含义）
-
-### 四、热点解读
-（分析当日领涨领跌**行业板块**背后的逻辑和驱动因素；重点梳理今日**概念板块**涨幅榜前列的主题逻辑（如 AI、低空经济、新能源等热门概念），识别资金集中流入的主线概念；结合近多日板块领涨/领跌统计，分析主线板块连续性与轮动方向）
-
-### 五、后市展望
-（结合当前走势和新闻，给出明日市场预判）
-
-### 六、风险提示
-（需要关注的风险点）
-
-### 七、策略计划
-（给出进攻/均衡/防守结论，对应仓位建议，并给出一个触发失效条件；最后补充“建议仅供参考，不构成投资建议”。）
-
----
-
-请直接输出复盘报告内容，不要输出其他说明文字。
-"""
-
-    def _generate_template_review(self, overview: MarketOverview, news: List) -> str:
+    def _generate_template_review(
+        self,
+        overview: MarketOverview,
+        news: List,
+        hotspot_stats: Optional[Dict] = None,
+    ) -> str:
         """使用模板生成复盘报告（无大模型时的备选方案）"""
         mood_code = self.profile.mood_index_code
-        # 根据 mood_index_code 查找对应指数
-        # cn: mood_code="000001"，idx.code 可能为 "sh000001"（以 mood_code 结尾）
-        # us: mood_code="SPX"，idx.code 直接为 "SPX"
         mood_index = next(
             (idx for idx in overview.indices if idx.code == mood_code or idx.code.endswith(mood_code)),
             None,
@@ -1068,92 +1107,152 @@ Output the report content directly, no extra commentary.
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
             indices_text += f"- **{idx.name}**: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
 
+        # 港股简要描述（仅 A 股区域）
+        hk_summary = ""
+        if self.region == "cn" and overview.hk_indices:
+            hk_parts = [
+                f"{idx.name} {'↑' if idx.change_pct > 0 else '↓' if idx.change_pct < 0 else '-'}{abs(idx.change_pct):.2f}%"
+                for idx in overview.hk_indices
+            ]
+            all_up = all(i.change_pct >= 0 for i in overview.hk_indices)
+            all_down = all(i.change_pct < 0 for i in overview.hk_indices)
+            sentiment = (
+                "偏暖，对A股情绪形成一定支撑"
+                if all_up
+                else ("偏弱，对A股情绪形成拖累" if all_down else "涨跌不一，对A股情绪影响有限")
+            )
+            hk_summary = f"港股方面，{' / '.join(hk_parts)}，外围环境{sentiment}。"
+
         # 板块信息
         top_text = "、".join([s["name"] for s in overview.top_sectors[:3]])
         bottom_text = "、".join([s["name"] for s in overview.bottom_sectors[:3]])
 
-        # 按 region 决定是否包含涨跌统计和板块（美股无）
+        # 涨跌统计（A 股有，美股/港股无）
         stats_section = ""
         if self.profile.has_market_stats:
-            stats_section = f"""
-### 三、涨跌统计
-| 指标 | 数值 |
-|------|------|
-| 上涨家数 | {overview.up_count} |
-| 下跌家数 | {overview.down_count} |
-| 涨停（含ST） | {overview.limit_up_count} |
-| 涨停（非ST） | {overview.non_st_limit_up_count} |
-| 跌停（含ST） | {overview.limit_down_count} |
-| 跌停（非ST） | {overview.non_st_limit_down_count} |
-| 两市成交额 | {overview.total_amount:.0f}亿 |
-"""
+            # 成交额对比行
+            vol_line = ""
+            if overview.volume_status and overview.prev_total_amount > 0:
+                pct = (overview.amount_ratio - 1) * 100
+                sign = "+" if pct >= 0 else ""
+                vol_line = (
+                    f"\n| 成交额对比 | 今日 {overview.total_amount:.0f}亿 vs "
+                    f"前日({overview.prev_review_date}) {overview.prev_total_amount:.0f}亿，"
+                    f"变化 {sign}{pct:.1f}%（{overview.volume_status}） |"
+                )
+            rf_line = f"\n| 个股涨跌 | **{overview.rise_fall_status}** |" if overview.rise_fall_status else ""
+            condition_line = ""
+            if overview.market_condition:
+                buy_tag = "✅ 可以考虑买入" if overview.can_buy else "❌ 建议观望/不买入"
+                condition_line = f"\n| 市场环境判断 | {overview.market_condition} → **{buy_tag}** |"
+            stats_section = (
+                f"\n### 三、涨跌统计\n"
+                f"| 指标 | 数值 |\n|------|------|\n"
+                f"| 上涨家数 | {overview.up_count} |\n"
+                f"| 下跌家数 | {overview.down_count} |\n"
+                f"| 非ST涨停 | {overview.non_st_limit_up_count} |\n"
+                f"| 非ST跌停 | {overview.non_st_limit_down_count} |\n"
+                f"| 两市成交额 | {overview.total_amount:.0f}亿 |"
+                f"{vol_line}{rf_line}{condition_line}\n"
+            )
+
+        # 板块表现（A 股有）
         sector_section = ""
-        if self.profile.has_sector_rankings and (top_text or bottom_text):
-            sector_section = f"""
-### 四、板块表现
-- **领涨(涨幅)**: {top_text}
-- **领跌(跌幅)**: {bottom_text}
-"""
-        # 涨停/跌停板块榜（模板报告中也展示）
-        limit_section = ""
-        if overview.sector_up_limit_ranking or overview.sector_down_limit_ranking:
-            limit_lines = ["\n### 热点解读 · 板块涨停/跌停家数榜"]
-            if overview.sector_up_limit_ranking:
-                limit_lines.append("| 板块 | 涨停家数 | 板块涨跌幅 |")
-                limit_lines.append("|------|---------|----------|")
-                for s in overview.sector_up_limit_ranking:
-                    pct = f"{s['change_pct']:+.2f}%" if s.get("change_pct") is not None else "N/A"
-                    limit_lines.append(f"| {s['name']} | {s['limit_up_count']} | {pct} |")
-            if overview.sector_down_limit_ranking:
-                limit_lines.append("")
-                limit_lines.append("| 板块 | 跌停家数 | 板块涨跌幅 |")
-                limit_lines.append("|------|---------|----------|")
-                for s in overview.sector_down_limit_ranking:
-                    pct = f"{s['change_pct']:+.2f}%" if s.get("change_pct") is not None else "N/A"
-                    limit_lines.append(f"| {s['name']} | {s['limit_down_count']} | {pct} |")
-            limit_section = "\n".join(limit_lines)
+        if self.profile.has_sector_rankings:
+            # 板块涨停/跌停家数榜
+            limit_up_rows = ""
+            if overview.top_sectors_by_limit_up:
+                rows = "\n".join(
+                    f"| {rank} | {s['name']} | {s.get('limit_up_count', 0)} | {s['change_pct']:+.2f}% |"
+                    for rank, s in enumerate(overview.top_sectors_by_limit_up, 1)
+                )
+                limit_up_rows = (
+                    "\n\n#### 行业板块 TOP10（按涨停数量）\n"
+                    "| 排名 | 板块 | 涨停数 | 涨跌幅 |\n|------|------|--------|--------|\n"
+                    f"{rows}"
+                )
+            limit_down_rows = ""
+            if overview.top_sectors_by_limit_down:
+                rows = "\n".join(
+                    f"| {rank} | {s['name']} | {s.get('limit_down_count', 0)} | {s['change_pct']:+.2f}% |"
+                    for rank, s in enumerate(overview.top_sectors_by_limit_down, 1)
+                )
+                limit_down_rows = (
+                    "\n\n#### 行业板块 TOP10（按跌停数量）\n"
+                    "| 排名 | 板块 | 跌停数 | 涨跌幅 |\n|------|------|--------|--------|\n"
+                    f"{rows}"
+                )
+            # 概念板块
+            concept_up = ""
+            if overview.top_concept_sectors:
+                parts = [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_concept_sectors[:10]]
+                concept_up = f"- **近1日领涨概念 TOP10**: {' | '.join(parts)}"
+            concept_down = ""
+            if overview.bottom_concept_sectors:
+                parts = [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_concept_sectors[:10]]
+                concept_down = f"- **近1日领跌概念 TOP10**: {' | '.join(parts)}"
+            concept_limit = ""
+            if overview.top_concept_by_limit_up:
+                rows = "\n".join(
+                    f"| {rank} | {s['name']} | {s.get('limit_up_count', 0)} | {s['change_pct']:+.2f}% |"
+                    for rank, s in enumerate(overview.top_concept_by_limit_up, 1)
+                )
+                concept_limit = (
+                    "\n\n#### 概念板块 TOP10（按涨停数量）\n"
+                    "| 排名 | 概念 | 涨停数 | 涨跌幅 |\n|------|------|--------|--------|\n"
+                    f"{rows}"
+                )
+            sector_section = (
+                f"\n### 四、热点解读\n"
+                f"📊 **近1日热点追踪（概念板块）**\n"
+                f"{concept_up}\n{concept_down}"
+                f"{limit_up_rows}{limit_down_rows}{concept_limit}\n"
+            )
+
         market_label = "A股" if self.region == "cn" else ("港股" if self.region == "hk" else "美股")
         strategy_summary = self.strategy.to_markdown_block()
-        report = f"""## {overview.date} 大盘复盘
 
-### 一、市场总结
-今日{market_label}市场整体呈现**{market_mood}**态势。
+        # 市场环境一句话总结
+        condition_summary = ""
+        if overview.market_condition:
+            buy_tag = "✅ **可以考虑买入**" if overview.can_buy else "❌ **建议观望/不买入**"
+            condition_summary = (
+                f"{overview.rise_fall_status}，成交额{overview.volume_status or '情况未知'}，"
+                f"{overview.market_condition}，{buy_tag}。"
+            )
 
-### 二、主要指数
-{indices_text}
-{stats_section}
-{sector_section}
-{limit_section}
-### 五、风险提示
-市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
-
-{strategy_summary}
-
----
-*复盘时间: {datetime.now().strftime('%H:%M')}*
-"""
+        report = (
+            f"## {overview.date} 大盘复盘\n\n"
+            f"### 一、市场总结\n"
+            f"今日{market_label}市场整体呈现**{market_mood}**态势。"
+            f"{' ' + condition_summary if condition_summary else ''}"
+            f"{' ' + hk_summary if hk_summary else ''}\n\n"
+            f"### 二、主要指数\n{indices_text}"
+            f"{stats_section}"
+            f"{sector_section}"
+            f"\n### 五、风险提示\n市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。\n\n"
+            f"{strategy_summary}\n\n"
+            f"---\n*复盘时间: {datetime.now().strftime('%H:%M')}*\n"
+        )
         return report
 
     def run_daily_review(self) -> str:
         """
-        执行每日大盘复盘流程
+        执行每日大盘复盘完整流程
 
         Returns:
             复盘报告文本
         """
         logger.info("========== 开始大盘复盘分析 ==========")
 
-        # 1. 获取市场概览
         overview = self.get_market_overview()
-
-        # 2. 搜索市场新闻
         news = self.search_market_news()
-
-        # 3. 生成复盘报告
         report = self.generate_market_review(overview, news)
 
-        logger.info("========== 大盘复盘分析完成 ==========")
+        # 将 overview 挂载到实例，供外部（如 market_review.py）持久化时读取
+        self._last_overview = overview
 
+        logger.info("========== 大盘复盘分析完成 ==========")
         return report
 
 
@@ -1170,17 +1269,17 @@ if __name__ == "__main__":
 
     analyzer = MarketAnalyzer()
 
-    # 测试获取市场概览
     overview = analyzer.get_market_overview()
     print(f"\n=== 市场概览 ===")
     print(f"日期: {overview.date}")
     print(f"指数数量: {len(overview.indices)}")
     for idx in overview.indices:
         print(f"  {idx.name}: {idx.current:.2f} ({idx.change_pct:+.2f}%)")
+    print(f"港股参考: {len(overview.hk_indices)} 个")
     print(f"上涨: {overview.up_count} | 下跌: {overview.down_count}")
-    print(f"成交额: {overview.total_amount:.0f}亿")
+    print(f"成交额: {overview.total_amount:.0f}亿 | 量能: {overview.volume_status}")
+    print(f"市场环境: {overview.market_condition}")
 
-    # 测试生成模板报告
     report = analyzer._generate_template_review(overview, [])
     print(f"\n=== 复盘报告 ===")
     print(report)
