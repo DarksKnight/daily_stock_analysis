@@ -5,7 +5,8 @@ import remarkGfm from "remark-gfm";
 import { TrendingUp } from "lucide-react";
 import { marketReviewApi } from "../api/marketReview";
 import type {
-  MarketReviewRegion,
+  MarketReviewToday,
+  MarketReviewTodayRegion,
   MarketReviewStatus,
 } from "../api/marketReview";
 import type { ParsedApiError } from "../api/error";
@@ -16,15 +17,12 @@ import { cn } from "../utils/cn";
 // ============ 常量 ============
 
 const REGION_OPTIONS: {
-  value: MarketReviewRegion;
+  value: MarketReviewTodayRegion;
   label: string;
   desc: string;
 }[] = [
   { value: "cn", label: "A股", desc: "沪深两市大盘复盘" },
   { value: "hk", label: "港股", desc: "恒生指数复盘" },
-  { value: "us", label: "美股", desc: "US Market Recap" },
-  { value: "both", label: "A股+美股", desc: "合并复盘报告" },
-  { value: "all", label: "全部", desc: "A股+港股+美股" },
 ];
 
 const POLL_INTERVAL_MS = 3000;
@@ -101,15 +99,45 @@ const MarkdownReport: React.FC<{ content: string }> = ({ content }) => (
 // ============ 主页面 ============
 
 const MarketReviewPage: React.FC = () => {
-  const [region, setRegion] = useState<MarketReviewRegion>("cn");
+  const [region, setRegion] = useState<MarketReviewTodayRegion>("cn");
   const [isRunning, setIsRunning] = useState(false);
   const [pollingTaskId, setPollingTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<MarketReviewStatus | null>(null);
+  const [todayReview, setTodayReview] = useState<MarketReviewToday | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
 
   useEffect(() => {
     document.title = "大盘复盘 - DSA";
   }, []);
+
+  const loadTodayReview = useCallback(async (nextRegion: MarketReviewTodayRegion) => {
+    const review = await marketReviewApi.getToday(nextRegion);
+    setTodayReview(review);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const review = await marketReviewApi.getToday(region);
+        if (!cancelled) {
+          setTodayReview(review);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTodayReview(null);
+          setError(getParsedApiError(err));
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [region]);
 
   // Polling effect – runs whenever pollingTaskId changes
   useEffect(() => {
@@ -126,6 +154,15 @@ const MarketReviewPage: React.FC = () => {
         if (cancelled) return;
         setTaskStatus(status);
         if (status.status === "completed" || status.status === "failed") {
+          if (status.status === "completed") {
+            try {
+              await loadTodayReview(status.region as MarketReviewTodayRegion);
+            } catch (err) {
+              if (!cancelled) {
+                setError(getParsedApiError(err));
+              }
+            }
+          }
           setIsRunning(false);
           setPollingTaskId(null);
           return;
@@ -162,7 +199,7 @@ const MarketReviewPage: React.FC = () => {
       cancelled = true;
       clearTimeout(timerId);
     };
-  }, [pollingTaskId]);
+  }, [loadTodayReview, pollingTaskId]);
 
   const handleRun = useCallback(async () => {
     setIsRunning(true);
@@ -333,16 +370,16 @@ const MarketReviewPage: React.FC = () => {
       )}
 
       {/* Report display */}
-      {isDone && taskStatus?.report && (
+      {todayReview?.report && (
         <Card variant="gradient" padding="lg" className="animate-fade-in">
           <div className="mb-4 flex items-center justify-between">
             <span className="label-uppercase text-muted-text">复盘报告</span>
             <button
               type="button"
               onClick={async () => {
-                if (!taskStatus?.report) return;
+                if (!todayReview?.report) return;
                 try {
-                  await navigator.clipboard.writeText(taskStatus.report);
+                  await navigator.clipboard.writeText(todayReview.report);
                 } catch {
                   /* ignore */
                 }
@@ -353,21 +390,8 @@ const MarketReviewPage: React.FC = () => {
               复制
             </button>
           </div>
-          <MarkdownReport content={taskStatus.report} />
+          <MarkdownReport content={todayReview.report} />
         </Card>
-      )}
-
-      {/* Empty state */}
-      {!taskStatus && !error && !isRunning && (
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/50 bg-card/40 py-20 text-center">
-          <TrendingUp className="mb-3 h-10 w-10 text-muted-text" />
-          <p className="text-sm font-medium text-secondary-text">
-            选择市场区域后点击「开始复盘」
-          </p>
-          <p className="mt-1 text-xs text-muted-text">
-            AI 将抓取实时行情数据并生成结构化复盘报告
-          </p>
-        </div>
       )}
     </div>
   );

@@ -10,6 +10,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 RegionType = Literal["cn", "hk", "us", "both", "all"]
+TodayRegionType = Literal["cn", "hk"]
 
 
 class MarketReviewRunRequest(BaseModel):
@@ -31,3 +32,10 @@ class MarketReviewStatusResponse(BaseModel):
     error: Optional[str] = None
     created_at: str
     completed_at: Optional[str] = None
+
+
+class MarketReviewTodayResponse(BaseModel):
+    region: TodayRegionType
+    trade_date: Optional[str] = None
+    report: Optional[str] = None
+    created_at: Optional[str] = None

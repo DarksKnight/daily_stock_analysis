@@ -159,6 +159,8 @@ class MarketAnalyzer:
         self.region = region if region in ("cn", "us", "hk") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
+        self._last_overview: Optional[MarketOverview] = None
+        self._last_news: List[Dict[str, Any]] = []
 
     def get_market_overview(self) -> MarketOverview:
         """
@@ -1358,6 +1360,7 @@ class MarketAnalyzer:
 
         # 将 overview 挂载到实例，供外部（如 market_review.py）持久化时读取
         self._last_overview = overview
+        self._last_news = list(news or [])
 
         logger.info("========== 大盘复盘分析完成 ==========")
         return report

@@ -11,17 +11,36 @@
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional
 
 from src.config import get_config
 from src.notification import NotificationService
 from src.market_analyzer import MarketAnalyzer
+from src.repositories.market_review_repo import MarketReviewRepository
 from src.search_service import SearchService
 from src.analyzer import GeminiAnalyzer
 
 
 logger = logging.getLogger(__name__)
+
+
+def _build_history_record(region: str, report: str, market_analyzer: MarketAnalyzer) -> Dict[str, Any]:
+    return {
+        "region": region,
+        "report_markdown": report,
+        "overview": getattr(market_analyzer, "_last_overview", None),
+        "news": getattr(market_analyzer, "_last_news", []),
+    }
+
+
+def _replace_review_history(records: List[Dict[str, Any]]) -> None:
+    if not records:
+        return
+
+    repo = MarketReviewRepository()
+    saved = repo.replace_daily_reviews(trade_date=date.today(), records=records)
+    logger.info("[大盘] 完整复盘历史已替换: %d 条", saved)
 
 
 def run_market_review(
@@ -51,6 +70,7 @@ def run_market_review(
     region = override_region if override_region is not None else (getattr(config, "market_review_region", "cn") or "cn")
     if region not in ("cn", "hk", "us", "both", "all"):
         region = "cn"
+    history_records: List[Dict[str, Any]] = []
 
     try:
         if region in ("both", "all"):
@@ -64,6 +84,7 @@ def run_market_review(
                 r_report = r_analyzer.run_daily_review()
                 if r_report:
                     reports[r] = r_report
+                    history_records.append(_build_history_record(r, r_report, r_analyzer))
 
             review_report = ""
             for r in regions_to_run:
@@ -81,8 +102,15 @@ def run_market_review(
                 region=region,
             )
             review_report = market_analyzer.run_daily_review()
+            if review_report:
+                history_records.append(_build_history_record(region, review_report, market_analyzer))
 
         if review_report:
+            try:
+                _replace_review_history(history_records)
+            except Exception as exc:
+                logger.error("[大盘] 完整复盘历史持久化失败: %s", exc)
+
             # 保存报告到文件
             date_str = datetime.now().strftime("%Y%m%d")
             report_filename = f"market_review_{date_str}.md"

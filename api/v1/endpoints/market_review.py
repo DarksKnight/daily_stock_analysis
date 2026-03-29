@@ -12,7 +12,7 @@
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
@@ -22,6 +22,7 @@ from api.v1.schemas.market_review import (
     MarketReviewRunRequest,
     MarketReviewStatusResponse,
     MarketReviewTaskAccepted,
+    MarketReviewTodayResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,3 +177,36 @@ def get_market_review_status(task_id: str) -> MarketReviewStatusResponse:
         )
 
     return MarketReviewStatusResponse(**task)
+
+
+@router.get(
+    "/today",
+    response_model=MarketReviewTodayResponse,
+    responses={200: {"description": "当天已存在的大盘复盘；若无数据则 report 为空"}},
+    summary="获取当天大盘复盘",
+    description="按市场区域读取当天已写入数据库的大盘复盘；若当天没有对应区域复盘，返回 200 且 report 为 null。",
+)
+def get_today_market_review(region: str = "cn") -> MarketReviewTodayResponse:
+    """读取当天指定区域的大盘复盘。"""
+    if region not in ("cn", "hk"):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "validation_error", "message": "region 仅支持 cn 或 hk"},
+        )
+
+    from src.repositories.market_review_repo import MarketReviewRepository
+
+    repo = MarketReviewRepository()
+    rows = repo.list_reviews(trade_date=date.today(), region=region, limit=1)
+    if not rows:
+        return MarketReviewTodayResponse(region=region, trade_date=None, report=None, created_at=None)
+
+    row = rows[0]
+    trade_date = row.get("trade_date")
+    created_at = row.get("created_at")
+    return MarketReviewTodayResponse(
+        region=region,
+        trade_date=trade_date.isoformat() if hasattr(trade_date, "isoformat") else str(trade_date),
+        report=row.get("report_markdown"),
+        created_at=created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+    )

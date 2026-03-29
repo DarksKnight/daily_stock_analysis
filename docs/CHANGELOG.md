@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Akshare 板块涨跌停统计在 `stock` 环境使用新版 `akshare` 时，会自动从 `stock_dt_pool_em` 回退到 `stock_zt_pool_dtgc_em`，避免跌停池采集失败导致行业跌停家数缺失。
 - [修复] 🐳 **Docker WebUI 运行时优先复用预构建静态资源** — `prepare_webui_frontend_assets()` 现在会先检查镜像内已有的 `static/index.html` 是否可直接复用；当容器运行时不包含 `apps/dsa-web` 源码目录且未安装 `npm` 时，也不会误报“未找到前端项目，无法自动构建”，从而恢复 Docker 部署后的 WebUI 打开能力。
 - [修复] 大盘复盘在行业板块排行缺少 `limit_up_count` / `limit_down_count` 字段时，会自动回看最近可用交易日的板块涨跌停统计并补齐按涨停/跌停数量排行，避免日志误报“字段不可用”后整段热点排行缺失。
+- [改进] 大盘复盘现在会把完整 Markdown 报告、`overview` 快照和新闻上下文写入 `market_review_history` 表；同日重复成功执行时会先清空当天旧复盘，再写入本次成功生成的市场区域记录。
+- [改进] 大盘复盘页面现在会按当前区域自动读取并展示当天已落库的复盘；若当天无该区域复盘则不显示报告内容，页面区域选项也收敛为 `A股` 与 `港股`。
 
 ## [3.11.0] - 2026-03-27
 

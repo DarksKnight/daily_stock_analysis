@@ -681,6 +681,29 @@ class MarketDailyStats(Base):
     __table_args__ = (UniqueConstraint("trade_date", "region", name="uq_market_daily_stats"),)
 
 
+class MarketReviewHistory(Base):
+    """
+    大盘复盘完整归档
+
+    保存每日各市场区域生成的完整 Markdown 复盘及其上下文快照。
+    """
+
+    __tablename__ = "market_review_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    region = Column(String(8), nullable=False, index=True)
+    report_markdown = Column(Text, nullable=False)
+    overview_json = Column(Text, nullable=False, default="{}")
+    news_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index("ix_market_review_history_date", "trade_date"),
+        Index("ix_market_review_history_date_region", "trade_date", "region"),
+    )
+
+
 class SectorLimitStats(Base):
     """
     板块涨跌停统计 — 每日按板块记录涨停/跌停家数
@@ -2215,6 +2238,98 @@ class DatabaseManager:
         except Exception as exc:
             logger.warning("[大盘] 读取前一日市场统计失败: %s", exc)
             return None
+
+    def replace_market_review_history_for_date(
+        self,
+        trade_date: date,
+        records: List[Dict[str, Any]],
+    ) -> int:
+        """
+        替换指定自然日的大盘复盘完整归档。
+
+        语义：
+        - 先删除当天所有旧记录
+        - 再批量写入本次新记录
+        """
+        if trade_date is None:
+            return 0
+
+        rows: List[MarketReviewHistory] = []
+        try:
+            with self.session_scope() as session:
+                session.execute(delete(MarketReviewHistory).where(MarketReviewHistory.trade_date == trade_date))
+                for item in records:
+                    rows.append(
+                        MarketReviewHistory(
+                            trade_date=trade_date,
+                            region=item["region"],
+                            report_markdown=item["report_markdown"],
+                            overview_json=item.get("overview_json", "{}") or "{}",
+                            news_json=item.get("news_json", "[]") or "[]",
+                        )
+                    )
+                if rows:
+                    session.add_all(rows)
+            return len(rows)
+        except Exception as exc:
+            logger.error("[大盘] 替换完整复盘历史失败: %s", exc)
+            return 0
+
+    def get_market_review_history(
+        self,
+        trade_date: Optional[date] = None,
+        region: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        查询大盘复盘完整归档。
+        """
+        try:
+            with self.get_session() as session:
+                stmt = select(MarketReviewHistory)
+                if trade_date is not None:
+                    stmt = stmt.where(MarketReviewHistory.trade_date == trade_date)
+                if region:
+                    stmt = stmt.where(MarketReviewHistory.region == region)
+                rows = (
+                    session.execute(
+                        stmt.order_by(desc(MarketReviewHistory.trade_date), desc(MarketReviewHistory.created_at)).limit(
+                            limit
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                return [
+                    {
+                        "id": row.id,
+                        "trade_date": row.trade_date,
+                        "region": row.region,
+                        "report_markdown": row.report_markdown,
+                        "overview_json": row.overview_json,
+                        "news_json": row.news_json,
+                        "created_at": row.created_at,
+                    }
+                    for row in rows
+                ]
+        except Exception as exc:
+            logger.warning("[大盘] 读取完整复盘历史失败: %s", exc)
+            return []
+
+    def delete_market_review_history_for_date(self, trade_date: date) -> int:
+        """
+        删除指定自然日的大盘复盘完整归档。
+        """
+        if trade_date is None:
+            return 0
+
+        try:
+            with self.session_scope() as session:
+                result = session.execute(delete(MarketReviewHistory).where(MarketReviewHistory.trade_date == trade_date))
+            return int(result.rowcount or 0)
+        except Exception as exc:
+            logger.error("[大盘] 删除完整复盘历史失败: %s", exc)
+            return 0
 
     # 板块涨跌停统计 — 用于热点解读和后续选股
     # ------------------------------------------------------------------

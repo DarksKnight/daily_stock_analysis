@@ -10,7 +10,9 @@
 """
 
 import logging
+import json
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from typing import Optional, List, Dict, Any
 
@@ -25,10 +27,80 @@ class MarketReviewRepository:
     提供与 demo-agent 兼容的接口（get_sector_hotspot_stats、get_prev_day_stats）。
     """
 
-    def __init__(self):
+    def __init__(self, db_manager=None):
         from src.storage import get_db
 
-        self._db = get_db()
+        self._db = db_manager or get_db()
+
+    @staticmethod
+    def _serialize_overview(overview: Any) -> Dict[str, Any]:
+        if overview is None:
+            return {}
+        if is_dataclass(overview):
+            return asdict(overview)
+        if isinstance(overview, dict):
+            return overview
+        if hasattr(overview, "to_dict"):
+            return overview.to_dict()
+        return json.loads(MarketReviewRepository._safe_json_dumps(overview))
+
+    @staticmethod
+    def _serialize_news_item(item: Any) -> Dict[str, Any]:
+        if isinstance(item, dict):
+            getter = item.get
+        else:
+            getter = lambda key, default=None: getattr(item, key, default)
+        return {
+            "title": getter("title", "") or "",
+            "snippet": getter("snippet", "") or "",
+            "url": getter("url", "") or "",
+            "source": getter("source", "") or "",
+            "published_date": getter("published_date", None),
+        }
+
+    @staticmethod
+    def _safe_json_dumps(payload: Any) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            return json.dumps(str(payload), ensure_ascii=False)
+
+    def replace_daily_reviews(self, trade_date: date, records: List[Dict[str, Any]]) -> int:
+        payloads = []
+        for item in records:
+            payloads.append(
+                {
+                    "region": item["region"],
+                    "report_markdown": item["report_markdown"],
+                    "overview_json": self._safe_json_dumps(self._serialize_overview(item.get("overview"))),
+                    "news_json": self._safe_json_dumps(
+                        [self._serialize_news_item(news) for news in (item.get("news") or [])]
+                    ),
+                }
+            )
+        return self._db.replace_market_review_history_for_date(trade_date=trade_date, records=payloads)
+
+    def list_reviews(
+        self,
+        trade_date: Optional[date] = None,
+        region: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        rows = self._db.get_market_review_history(trade_date=trade_date, region=region, limit=limit)
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "id": row["id"],
+                    "trade_date": row["trade_date"],
+                    "region": row["region"],
+                    "report_markdown": row["report_markdown"],
+                    "overview": json.loads(row["overview_json"] or "{}"),
+                    "news": json.loads(row["news_json"] or "[]"),
+                    "created_at": row["created_at"],
+                }
+            )
+        return result
 
     def get_prev_day_stats(
         self,
