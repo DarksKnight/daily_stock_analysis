@@ -12,7 +12,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -436,6 +436,114 @@ class MarketAnalyzer:
         }
     )
 
+    @staticmethod
+    def _has_sector_limit_fields(sectors: List[Dict]) -> bool:
+        """判断板块列表是否已包含涨停/跌停统计字段。"""
+        return any(
+            "limit_up_count" in sector or "limit_down_count" in sector
+            for sector in (sectors or [])
+        )
+
+    @staticmethod
+    def _enrich_sector_rankings(sectors: List[Dict], stats_by_name: Dict[str, Dict]) -> List[Dict]:
+        """按板块名称补齐排行结果中的涨跌停统计字段，保留原有排序。"""
+        enriched: List[Dict] = []
+        for sector in sectors or []:
+            item = dict(sector)
+            name = str(item.get("name", "")).strip()
+            if name and name in stats_by_name:
+                stats = stats_by_name[name]
+                for key in (
+                    "change_pct",
+                    "limit_up_count",
+                    "limit_down_count",
+                    "up_count",
+                    "down_count",
+                ):
+                    if key not in item or item.get(key) is None:
+                        item[key] = stats.get(key)
+            enriched.append(item)
+        return enriched
+
+    @staticmethod
+    def _merge_unique_sectors(*sector_lists: List[Dict]) -> List[Dict]:
+        """按板块名称去重合并多个列表，优先保留先出现的数据。"""
+        merged: Dict[str, Dict] = {}
+        ordered: List[Dict] = []
+
+        for sector_list in sector_lists:
+            for sector in sector_list or []:
+                name = str(sector.get("name", "")).strip()
+                if not name:
+                    continue
+
+                existing = merged.get(name)
+                if existing is None:
+                    existing = dict(sector)
+                    existing["name"] = name
+                    merged[name] = existing
+                    ordered.append(existing)
+                    continue
+
+                for key, value in sector.items():
+                    if key == "name" or value is None or value == "":
+                        continue
+                    if key not in existing or existing.get(key) is None:
+                        existing[key] = value
+
+        return ordered
+
+    def _get_recent_sector_limit_trade_dates(self, lookback_days: int = 7) -> List[str]:
+        """生成近几日的候选交易日期，供板块涨跌停统计回看使用。"""
+        base_date = datetime.now().date()
+        return [(base_date - timedelta(days=offset)).strftime("%Y%m%d") for offset in range(lookback_days)]
+
+    def _load_sector_limit_stats_with_fallback(self) -> List[Dict]:
+        """获取最近可用的板块涨跌停统计，兼容周末/非交易日回看。"""
+        for trade_date in self._get_recent_sector_limit_trade_dates():
+            try:
+                stats = self.data_manager.get_sector_limit_stats(trade_date=trade_date)
+            except Exception as exc:
+                logger.warning("[大盘] 获取 %s 的板块涨跌停统计失败: %s", trade_date, exc)
+                continue
+
+            if stats:
+                logger.info("[大盘] 使用 %s 的板块涨跌停统计补齐行业排行", trade_date)
+                return stats
+
+        return []
+
+    def _populate_sector_limit_rankings(self, overview: MarketOverview, all_sectors: List[Dict]) -> None:
+        """根据板块涨跌停统计生成 Top10 排名。"""
+        if not self._has_sector_limit_fields(all_sectors):
+            logger.info("[大盘] 涨停/跌停数量字段不可用，跳过按涨跌停排名")
+            return
+
+        overview.top_sectors_by_limit_up = sorted(
+            [s for s in all_sectors if (s.get("limit_up_count") or 0) > 0],
+            key=lambda x: (-(x.get("limit_up_count") or 0), -(x.get("change_pct") or 0)),
+        )[:10]
+        overview.top_sectors_by_limit_down = sorted(
+            [s for s in all_sectors if (s.get("limit_down_count") or 0) > 0],
+            key=lambda x: (-(x.get("limit_down_count") or 0), x.get("change_pct") or 0),
+        )[:10]
+
+        if overview.top_sectors_by_limit_up:
+            logger.info(
+                "[大盘] 涨停板块Top10: %s",
+                [(s["name"], s.get("limit_up_count", 0)) for s in overview.top_sectors_by_limit_up],
+            )
+        else:
+            logger.info("[大盘] 当前板块涨停统计可用，但无涨停板块")
+
+        if overview.top_sectors_by_limit_down:
+            logger.info(
+                "[大盘] 跌停板块Top10: %s",
+                [(s["name"], s.get("limit_down_count", 0)) for s in overview.top_sectors_by_limit_down],
+            )
+        else:
+            logger.info("[大盘] 当前板块跌停统计可用，但无跌停板块")
+
     def _get_sector_rankings(self, overview: MarketOverview) -> None:
         """
         获取行业板块涨跌榜、概念板块涨跌榜，以及涨停/跌停数量排行。
@@ -454,8 +562,8 @@ class MarketAnalyzer:
             if all_top or all_bottom:
                 overview.all_top_sectors = all_top or []
                 overview.all_bottom_sectors = all_bottom or []
-                overview.top_sectors = (all_top or [])[:5]
-                overview.bottom_sectors = (all_bottom or [])[:5]
+                overview.top_sectors = overview.all_top_sectors[:5]
+                overview.bottom_sectors = overview.all_bottom_sectors[:5]
 
                 logger.info(
                     "[大盘] 领涨板块(展示): %s，全量 %d 个",
@@ -468,30 +576,29 @@ class MarketAnalyzer:
                     len(overview.all_bottom_sectors),
                 )
 
-                # 从全量板块列表计算涨停/跌停数量排行
-                all_sectors = all_top or []
-                has_limit_data = any(
-                    s.get("limit_up_count", 0) > 0 or s.get("limit_down_count", 0) > 0 for s in all_sectors
-                )
-                if has_limit_data:
-                    overview.top_sectors_by_limit_up = sorted(
-                        [s for s in all_sectors if s.get("limit_up_count", 0) > 0],
-                        key=lambda x: (-x.get("limit_up_count", 0), -x.get("change_pct", 0)),
-                    )[:10]
-                    overview.top_sectors_by_limit_down = sorted(
-                        [s for s in all_sectors if s.get("limit_down_count", 0) > 0],
-                        key=lambda x: (-x.get("limit_down_count", 0), x.get("change_pct", 0)),
-                    )[:10]
-                    logger.info(
-                        "[大盘] 涨停板块Top10: %s",
-                        [(s["name"], s.get("limit_up_count", 0)) for s in overview.top_sectors_by_limit_up],
-                    )
-                    logger.info(
-                        "[大盘] 跌停板块Top10: %s",
-                        [(s["name"], s.get("limit_down_count", 0)) for s in overview.top_sectors_by_limit_down],
-                    )
-                else:
-                    logger.info("[大盘] 涨停/跌停数量字段不可用，跳过按涨跌停排名")
+                all_sectors = self._merge_unique_sectors(overview.all_top_sectors, overview.all_bottom_sectors)
+                if not self._has_sector_limit_fields(all_sectors):
+                    limit_stats = self._load_sector_limit_stats_with_fallback()
+                    if limit_stats:
+                        stats_by_name = {
+                            str(s.get("name", "")).strip(): s
+                            for s in limit_stats
+                            if s.get("name")
+                        }
+                        overview.all_top_sectors = self._enrich_sector_rankings(overview.all_top_sectors, stats_by_name)
+                        overview.all_bottom_sectors = self._enrich_sector_rankings(
+                            overview.all_bottom_sectors,
+                            stats_by_name,
+                        )
+                        overview.top_sectors = overview.all_top_sectors[:5]
+                        overview.bottom_sectors = overview.all_bottom_sectors[:5]
+                        all_sectors = self._merge_unique_sectors(
+                            overview.all_top_sectors,
+                            overview.all_bottom_sectors,
+                            limit_stats,
+                        )
+
+                self._populate_sector_limit_rankings(overview, all_sectors)
 
                 # 保存当日全量板块快照到 DB
                 self._save_sector_snapshot(overview)

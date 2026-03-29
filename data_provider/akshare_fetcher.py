@@ -1871,6 +1871,7 @@ class AkshareFetcher(BaseFetcher):
         数据源：东财涨停股票池 + 跌停股票池 + 行业板块行情表
         - ak.stock_zt_pool_em(date=YYYYMMDD): 涨停板股票池，含 所属行业
         - ak.stock_dt_pool_em(date=YYYYMMDD): 跌停板股票池，含 所属行业
+          兼容 akshare 新版命名 ak.stock_zt_pool_dtgc_em(date=YYYYMMDD)
         - ak.stock_board_industry_name_em(): 获取全部板块涨跌幅、上涨/下跌家数
 
         Returns:
@@ -1902,10 +1903,20 @@ class AkshareFetcher(BaseFetcher):
         # 2. 跌停股票池 → 按行业聚合跌停家数
         limit_down_by_sector: Dict[str, int] = {}
         try:
+            limit_down_fetcher = getattr(ak, "stock_dt_pool_em", None)
+            limit_down_api_name = "stock_dt_pool_em"
+            if limit_down_fetcher is None:
+                limit_down_fetcher = getattr(ak, "stock_zt_pool_dtgc_em", None)
+                limit_down_api_name = "stock_zt_pool_dtgc_em"
+            if limit_down_fetcher is None:
+                raise AttributeError(
+                    "module 'akshare' has no attribute 'stock_dt_pool_em' or 'stock_zt_pool_dtgc_em'"
+                )
+
             self._set_random_user_agent()
             self._enforce_rate_limit()
-            logger.info("[API调用] ak.stock_dt_pool_em(date=%s) 获取跌停股票池...", date_str)
-            df_dt = ak.stock_dt_pool_em(date=date_str)
+            logger.info("[API调用] ak.%s(date=%s) 获取跌停股票池...", limit_down_api_name, date_str)
+            df_dt = limit_down_fetcher(date=date_str)
             if df_dt is not None and not df_dt.empty and "所属行业" in df_dt.columns:
                 for sector in df_dt["所属行业"].dropna():
                     sector = str(sector).strip()
