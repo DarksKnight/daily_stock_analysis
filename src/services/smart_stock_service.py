@@ -153,17 +153,20 @@ class SmartStockService:
             }
         }
         """
-        code = raw.get("code")
-        if str(code) != "100":
-            msg = raw.get("message", "未知错误")
+        code = str(raw.get("code"))
+        msg = str(raw.get("msg") or raw.get("message") or "未知错误")
+        if code not in {"100", "201"}:
             logger.warning(f"东财选股 API 返回非成功 code={code} msg={msg}")
             raise ValueError(f"东财选股接口返回错误（code={code}）：{msg}")
+
+        if code == "201":
+            logger.info(f"东财选股未命中结果，返回空列表: {msg}")
 
         data = raw.get("data") or {}
         result = data.get("result") or {}
         columns: List[Any] = result.get("columns") or []
         data_list: List[Any] = result.get("dataList") or []
-        total: int = result.get("count", len(data_list))
+        total: int = result.get("count", result.get("total", len(data_list)))
 
         # 构建列说明列表，同时收集所有有效 key
         col_info: List[Dict[str, str]] = []
